@@ -95,9 +95,14 @@ info "Installing systemd user service..."
 mkdir -p "$SYSTEMD_USER_DIR"
 cp "$SCRIPT_DIR/systemd/llm-usage-indicator.service" "$SYSTEMD_USER_DIR/"
 
-systemctl --user daemon-reload
-systemctl --user enable --now llm-usage-indicator
-info "Service enabled and started."
+if systemctl --user daemon-reload 2>/dev/null; then
+    systemctl --user enable --now llm-usage-indicator 2>/dev/null \
+        && info "Service enabled and started." \
+        || warn "Could not start service — run after login: systemctl --user enable --now llm-usage-indicator"
+else
+    warn "No active user session — daemon service will activate at next login."
+    warn "Run after login: systemctl --user enable --now llm-usage-indicator"
+fi
 
 # ── Step 10: Install Waybar script ───────────────────────────────────────────
 WAYBAR_SCRIPTS="$HOME/.config/waybar/scripts"
@@ -139,52 +144,73 @@ update-desktop-database "$APPS_DIR" 2>/dev/null || true
 info "Desktop entry installed: $APPS_DIR/llm-usage-indicator-settings.desktop"
 
 # ── Step 12: Install tray indicator ──────────────────────────────────────────
-info "Installing GNOME tray indicator..."
+info "Installing tray indicator..."
 
-# Check for AppIndicator3
-if ! "$PYTHON" -c "
-import gi
-gi.require_version('AppIndicator3', '0.1')
-from gi.repository import AppIndicator3
-" 2>/dev/null; then
-    warn "AppIndicator3 not found — tray indicator will not work."
-    warn "Install with: sudo apt install gir1.2-appindicator3-0.1 gnome-shell-extension-appindicator"
+# python3-gi + GTK3 required; AppIndicator3 is optional (GNOME text labels)
+if ! "$PYTHON" -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk" 2>/dev/null; then
+    warn "python3-gi / GTK3 not found — tray will not work."
+    warn "Install with: sudo apt install python3-gi gir1.2-gtk-3.0"
 else
-    info "AppIndicator3 — OK"
+    info "python3-gi / GTK3 — OK"
+    if "$PYTHON" -c "
+import gi; gi.require_version('AppIndicator3','0.1')
+from gi.repository import AppIndicator3" 2>/dev/null; then
+        info "AppIndicator3 — OK (GNOME text labels enabled)"
+    else
+        info "AppIndicator3 not found — Gtk.StatusIcon X11 fallback will be used"
+        info "  For GNOME text labels: sudo apt install gir1.2-appindicator3-0.1 gnome-shell-extension-appindicator"
+    fi
 fi
 
 # Copy tray script to lib dir
 cp "$SCRIPT_DIR/gui/tray.py" "$LIB_DIR/tray.py"
 
-# Create tray launcher wrapper
+# Create tray launcher wrapper (runs the Python module directly)
 TRAY_BIN="$BIN_DIR/llm-usage-indicator-tray"
 cat > "$TRAY_BIN" << TRAY_EOF
 #!/usr/bin/env bash
-PYTHONPATH="\$HOME/.local/lib" exec python3 -m llm_usage_indicator.tray "\$@"
+PYTHONPATH="$HOME/.local/lib" exec python3 -m llm_usage_indicator.tray "\$@"
 TRAY_EOF
 chmod +x "$TRAY_BIN"
 info "Tray launcher installed: $TRAY_BIN"
 
-# XDG autostart: launch tray on login (works on all DEs without extra config)
+# Install tray systemd user service
+cp "$SCRIPT_DIR/systemd/llm-usage-indicator-tray.service" "$SYSTEMD_USER_DIR/"
+systemctl --user daemon-reload 2>/dev/null || true
+info "Tray service registered: llm-usage-indicator-tray"
+
+# Create a starter that imports the X11/Wayland display env into the systemd
+# user session and then starts the tray via systemd, so the process is
+# trackable with `systemctl --user status llm-usage-indicator-tray`.
+# Falls back to running the binary directly when systemd is unavailable.
+TRAY_STARTER="$BIN_DIR/llm-usage-indicator-tray-start"
+cat > "$TRAY_STARTER" << STARTER_EOF
+#!/usr/bin/env bash
+if command -v systemctl >/dev/null 2>&1; then
+    [ -n "\${DISPLAY:-}" ]         && systemctl --user import-environment DISPLAY XAUTHORITY 2>/dev/null || true
+    [ -n "\${WAYLAND_DISPLAY:-}" ] && systemctl --user import-environment WAYLAND_DISPLAY    2>/dev/null || true
+    systemctl --user start llm-usage-indicator-tray 2>/dev/null && exit 0
+fi
+exec "$TRAY_BIN"
+STARTER_EOF
+chmod +x "$TRAY_STARTER"
+info "Tray starter installed: $TRAY_STARTER"
+
+# XDG autostart uses the starter so systemd tracks the tray process
 AUTOSTART_DIR="$HOME/.config/autostart"
 mkdir -p "$AUTOSTART_DIR"
 cp "$SCRIPT_DIR/gui/llm-usage-indicator-tray.desktop" "$AUTOSTART_DIR/"
-sed -i "s|^Exec=.*|Exec=$TRAY_BIN|" "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
+sed -i "s|^Exec=.*|Exec=$TRAY_STARTER|" "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
 info "Autostart entry installed: $AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
-
-# Install tray systemd user service (optional, for DEs that support graphical-session.target)
-info "Installing tray systemd user service..."
-cp "$SCRIPT_DIR/systemd/llm-usage-indicator-tray.service" "$SYSTEMD_USER_DIR/"
-systemctl --user daemon-reload
-# Enable but don't forcibly start here — XDG autostart handles the current session.
-# On supported DEs (GNOME, KDE) it will start automatically on next login.
-systemctl --user enable llm-usage-indicator-tray 2>/dev/null || true
-info "Tray service enabled (starts with graphical session on next login)."
 
 # Start tray now if a display is available
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
     pkill -f "llm_usage_indicator.tray" 2>/dev/null || true
-    nohup "$TRAY_BIN" >/dev/null 2>&1 &
+    systemctl --user stop llm-usage-indicator-tray 2>/dev/null || true
+    [ -n "${DISPLAY:-}" ]         && systemctl --user import-environment DISPLAY XAUTHORITY 2>/dev/null || true
+    [ -n "${WAYLAND_DISPLAY:-}" ] && systemctl --user import-environment WAYLAND_DISPLAY    2>/dev/null || true
+    systemctl --user start llm-usage-indicator-tray 2>/dev/null \
+        || { nohup "$TRAY_BIN" >/dev/null 2>&1 & }
     info "Tray indicator started."
 else
     info "No display detected — tray will start at next login."

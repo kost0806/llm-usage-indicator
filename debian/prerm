@@ -1,0 +1,41 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+    remove|purge)
+        REAL_USER=""
+        if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+            REAL_USER="${SUDO_USER}"
+        elif [ -n "${PKEXEC_UID:-}" ] && [ "${PKEXEC_UID}" != "0" ]; then
+            REAL_USER=$(getent passwd "${PKEXEC_UID}" | cut -d: -f1)
+        fi
+
+        if [ -z "${REAL_USER}" ]; then
+            exit 0
+        fi
+
+        REAL_HOME=$(getent passwd "${REAL_USER}" | cut -d: -f6)
+        REAL_UID=$(id -u "${REAL_USER}")
+        XDG_RUNTIME_DIR="/run/user/${REAL_UID}"
+
+        runuser -u "${REAL_USER}" -- \
+            env HOME="${REAL_HOME}" \
+                XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
+                DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus" \
+            bash -c '
+                systemctl --user disable --now llm-usage-indicator       2>/dev/null || true
+                systemctl --user stop llm-usage-indicator-tray           2>/dev/null || true
+                pkill -f "llm_usage_indicator.tray"                      2>/dev/null || true
+                rm -f ~/.config/autostart/llm-usage-indicator-tray.desktop
+                rm -f ~/.config/systemd/user/llm-usage-indicator.service
+                rm -f ~/.config/systemd/user/llm-usage-indicator-tray.service
+                rm -f ~/.local/bin/llm-usage-indicator
+                rm -f ~/.local/bin/llm-usage-indicator-tray
+                rm -f ~/.local/bin/llm-usage-indicator-tray-start
+                rm -f ~/.local/bin/llm-usage-indicator-settings
+                rm -rf ~/.local/lib/llm_usage_indicator
+                systemctl --user daemon-reload                            2>/dev/null || true
+                echo "llm-usage-indicator: user files removed for '"'"'$USER'"'"'."
+            '
+        ;;
+esac
