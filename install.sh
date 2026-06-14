@@ -165,12 +165,21 @@ TRAY_EOF
 chmod +x "$TRAY_BIN"
 info "Tray launcher installed: $TRAY_BIN"
 
-# XDG autostart: launch tray on login
+# XDG autostart: launch tray on login (works on all DEs without extra config)
 AUTOSTART_DIR="$HOME/.config/autostart"
 mkdir -p "$AUTOSTART_DIR"
 cp "$SCRIPT_DIR/gui/llm-usage-indicator-tray.desktop" "$AUTOSTART_DIR/"
 sed -i "s|^Exec=.*|Exec=$TRAY_BIN|" "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
 info "Autostart entry installed: $AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
+
+# Install tray systemd user service (optional, for DEs that support graphical-session.target)
+info "Installing tray systemd user service..."
+cp "$SCRIPT_DIR/systemd/llm-usage-indicator-tray.service" "$SYSTEMD_USER_DIR/"
+systemctl --user daemon-reload
+# Enable but don't forcibly start here — XDG autostart handles the current session.
+# On supported DEs (GNOME, KDE) it will start automatically on next login.
+systemctl --user enable llm-usage-indicator-tray 2>/dev/null || true
+info "Tray service enabled (starts with graphical session on next login)."
 
 # Start tray now if a display is available
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
@@ -200,5 +209,13 @@ echo "  4. Open settings:"
 echo "       $SETTINGS_BIN"
 echo "       (or right-click the tray icon → Settings…)"
 echo ""
-echo "  5. Restart the daemon after editing config:"
+echo "  5. Check service status (note: --user flag is required):"
+echo "       systemctl --user status llm-usage-indicator        # daemon"
+echo "       systemctl --user status llm-usage-indicator-tray   # tray"
+echo ""
+echo "  6. View logs:"
+echo "       journalctl --user -u llm-usage-indicator -f        # daemon logs"
+echo "       journalctl --user -u llm-usage-indicator-tray -f   # tray logs"
+echo ""
+echo "  7. Restart the daemon after editing config:"
 echo "       systemctl --user restart llm-usage-indicator"
