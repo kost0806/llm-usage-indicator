@@ -1,0 +1,444 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  # ── 1. Lint & syntax check ───────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install aiohttp aiosqlite --quiet
+
+      - name: Syntax check (ast.parse)
+        run: |
+          python3 - <<'EOF'
+          import ast, sys, pathlib
+          files = list(pathlib.Path("daemon").rglob("*.py"))
+          errors = []
+          for f in files:
+              try:
+                  ast.parse(f.read_text())
+                  print(f"OK  {f}")
+              except SyntaxError as e:
+                  errors.append(f"ERR {f}: {e}")
+                  print(f"ERR {f}: {e}", file=sys.stderr)
+          if errors:
+              sys.exit(1)
+          print(f"\nAll {len(files)} files OK.")
+          EOF
+
+      - name: Import check
+        run: |
+          cd $GITHUB_WORKSPACE
+          python3 -c "
+          import sys
+          sys.path.insert(0, '.')
+          from daemon.config import load_config
+          from daemon.store import Store
+          from daemon.providers.base import ProviderStatus, AbstractProvider
+          from daemon.providers.claude import ClaudeProvider
+          from daemon.providers.gemini import GeminiProvider
+          from daemon.providers.openai_p import OpenAIProvider
+          from daemon.server import SocketServer
+          print('All imports OK')
+          "
+
+      - name: Check shell scripts
+        run: |
+          bash -n waybar/module.sh && echo "waybar/module.sh OK"
+          bash -n install.sh        && echo "install.sh OK"
+
+  # ── 2. Build distributable artifact ──────────────────────────────────────
+  build:
+    name: Build artifact
+    runs-on: ubuntu-22.04
+    needs: lint
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact_name: ${{ steps.version.outputs.artifact_name }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            # Use short commit hash for non-tag builds
+            VERSION="0.0.0-dev.$(git rev-parse --short HEAD)"
+          fi
+          ARTIFACT_NAME="llm-credit-monitor-${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Building version: ${VERSION}"
+
+      - name: Assemble release directory
+        run: |
+          ARTIFACT="${{ steps.version.outputs.artifact_name }}"
+          mkdir -p "dist/${ARTIFACT}"
+
+          # Core files
+          cp -r daemon           "dist/${ARTIFACT}/"
+          cp -r waybar           "dist/${ARTIFACT}/"
+          cp -r systemd          "dist/${ARTIFACT}/"
+          cp    config.example.toml "dist/${ARTIFACT}/"
+          cp    requirements.txt    "dist/${ARTIFACT}/"
+          cp    install.sh          "dist/${ARTIFACT}/"
+          cp    README.md           "dist/${ARTIFACT}/" 2>/dev/null || true
+          cp    docs/README.en.md   "dist/${ARTIFACT}/" 2>/dev/null || true
+
+          # Remove Python cache files
+          find "dist/${ARTIFACT}" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+          find "dist/${ARTIFACT}" -name "*.pyc" -delete 2>/dev/null || true
+
+          # Ensure scripts are executable
+          chmod +x "dist/${ARTIFACT}/install.sh"
+          chmod +x "dist/${ARTIFACT}/waybar/module.sh"
+
+          # Embed version into install.sh
+          sed -i "s|^# install.sh.*|# install.sh — llm-credit-monitor v${VERSION}|" \
+            "dist/${ARTIFACT}/install.sh" || true
+
+          echo "Contents of dist/${ARTIFACT}:"
+          find "dist/${ARTIFACT}" -type f | sort
+
+      - name: Create tarball
+        run: |
+          ARTIFACT="${{ steps.version.outputs.artifact_name }}"
+          cd dist
+          tar -czf "${ARTIFACT}.tar.gz" "${ARTIFACT}/"
+          sha256sum "${ARTIFACT}.tar.gz" > "${ARTIFACT}.tar.gz.sha256"
+          echo "Tarball size: $(du -sh "${ARTIFACT}.tar.gz" | cut -f1)"
+
+      - name: Create Debian package
+        run: |
+          ARTIFACT="${{ steps.version.outputs.artifact_name }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          PKG_DIR="dist/deb/${ARTIFACT}"
+
+          # Package structure
+          mkdir -p "${PKG_DIR}/DEBIAN"
+          mkdir -p "${PKG_DIR}/usr/lib/llm-credit-monitor"
+          mkdir -p "${PKG_DIR}/usr/bin"
+          mkdir -p "${PKG_DIR}/usr/share/doc/llm-credit-monitor"
+          mkdir -p "${PKG_DIR}/usr/lib/systemd/user"
+          mkdir -p "${PKG_DIR}/etc/llm-credit-monitor"
+
+          # Daemon library
+          cp -r "dist/${ARTIFACT}/daemon/"* "${PKG_DIR}/usr/lib/llm-credit-monitor/"
+
+          # Wrapper binary
+          cat > "${PKG_DIR}/usr/bin/llm-credit-monitor" << 'WRAP'
+          #!/usr/bin/env bash
+          PYTHONPATH="/usr/lib/llm-credit-monitor" exec python3 -c "
+          import sys
+          sys.path.insert(0, '/usr/lib/llm-credit-monitor')
+          from main import main
+          main()
+          " "$@"
+          WRAP
+          chmod +x "${PKG_DIR}/usr/bin/llm-credit-monitor"
+
+          # Systemd user service
+          cp "dist/${ARTIFACT}/systemd/llm-credit-monitor.service" \
+             "${PKG_DIR}/usr/lib/systemd/user/"
+
+          # Example config
+          cp "dist/${ARTIFACT}/config.example.toml" \
+             "${PKG_DIR}/etc/llm-credit-monitor/"
+
+          # Waybar script
+          mkdir -p "${PKG_DIR}/usr/share/llm-credit-monitor/waybar"
+          cp "dist/${ARTIFACT}/waybar/"* \
+             "${PKG_DIR}/usr/share/llm-credit-monitor/waybar/"
+
+          # Docs
+          cp "dist/${ARTIFACT}/README.md"        "${PKG_DIR}/usr/share/doc/llm-credit-monitor/" 2>/dev/null || true
+          cp "dist/${ARTIFACT}/docs/README.en.md" "${PKG_DIR}/usr/share/doc/llm-credit-monitor/" 2>/dev/null || true
+          cp "dist/${ARTIFACT}/requirements.txt"  "${PKG_DIR}/usr/share/doc/llm-credit-monitor/"
+
+          # Postinst script
+          cat > "${PKG_DIR}/DEBIAN/postinst" << 'POSTINST'
+          #!/bin/bash
+          set -e
+          echo "llm-credit-monitor installed."
+          echo "To configure: cp /etc/llm-credit-monitor/config.example.toml ~/.config/llm-credit-monitor/config.toml"
+          echo "Then edit your API keys and run: systemctl --user enable --now llm-credit-monitor"
+          POSTINST
+          chmod 755 "${PKG_DIR}/DEBIAN/postinst"
+
+          # Calculate installed size (kB)
+          INSTALLED_SIZE=$(du -sk "${PKG_DIR}" | cut -f1)
+
+          # Control file
+          # Note: version must be a valid Debian version (strip 'dev.' prefix for deb)
+          DEB_VERSION=$(echo "$VERSION" | sed 's/-dev\./~dev./g')
+          cat > "${PKG_DIR}/DEBIAN/control" << CONTROL
+          Package: llm-credit-monitor
+          Version: ${DEB_VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: all
+          Depends: python3 (>= 3.10), python3-pip
+          Recommends: waybar
+          Installed-Size: ${INSTALLED_SIZE}
+          Maintainer: llm-credit-monitor contributors
+          Description: LLM credit and TPS monitor for Waybar
+           Displays Claude/Gemini/OpenAI credit balance, daily usage,
+           and tokens-per-second in Waybar status bar on Ubuntu 22.04+.
+          CONTROL
+
+          # Build deb
+          dpkg-deb --build "${PKG_DIR}" "dist/${ARTIFACT}.deb"
+          sha256sum "dist/${ARTIFACT}.deb" > "dist/${ARTIFACT}.deb.sha256"
+          echo "Deb package size: $(du -sh "dist/${ARTIFACT}.deb" | cut -f1)"
+
+      - name: Upload artifact (tarball)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact_name }}-tarball
+          path: |
+            dist/${{ steps.version.outputs.artifact_name }}.tar.gz
+            dist/${{ steps.version.outputs.artifact_name }}.tar.gz.sha256
+          retention-days: 30
+
+      - name: Upload artifact (deb)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact_name }}-deb
+          path: |
+            dist/${{ steps.version.outputs.artifact_name }}.deb
+            dist/${{ steps.version.outputs.artifact_name }}.deb.sha256
+          retention-days: 30
+
+  # ── 3. Integration smoke test ─────────────────────────────────────────────
+  smoke-test:
+    name: Smoke test
+    runs-on: ubuntu-22.04
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install aiohttp aiosqlite --quiet
+
+      - name: Test store CRUD
+        run: |
+          cd $GITHUB_WORKSPACE
+          python3 -c "
+          import asyncio, sys, time
+          sys.path.insert(0, '.')
+          from daemon.store import Store
+          from pathlib import Path
+
+          async def run():
+              store = Store(Path('/tmp/ci-test.db'))
+              await store.open()
+              await store.save_snapshot('claude', 5.0, 0.5, 42.0)
+              await store.record_tps_event('claude', 42.0, 820)
+              tps = await store.get_last_tps('claude')
+              snap = await store.get_latest_snapshot('claude')
+              assert abs(tps - 42.0) < 0.1, f'TPS mismatch: {tps}'
+              assert snap is not None, 'Snapshot not found'
+              await store.close()
+              print('Store test PASSED')
+
+          asyncio.run(run())
+          "
+
+      - name: Test socket server (status + push_tps)
+        run: |
+          cd $GITHUB_WORKSPACE
+          python3 -c "
+          import asyncio, json, time, sys
+          sys.path.insert(0, '.')
+          from daemon.store import Store
+          from daemon.server import SocketServer
+          from daemon.providers.base import ProviderStatus
+          from pathlib import Path
+
+          async def run():
+              store = Store(Path('/tmp/ci-server.db'))
+              await store.open()
+              statuses = [
+                  ProviderStatus('Claude', 20.0, 7.6, 0.23, 42.3, time.time()),
+                  ProviderStatus('Gemini', 15.0, 6.9, 0.05, 38.0, time.time()),
+                  ProviderStatus('OpenAI', 10.0, 5.8, 1.10, 31.0, time.time()),
+              ]
+              async def get_statuses():
+                  return statuses
+              server = SocketServer('/tmp/ci-test.sock', store, get_statuses)
+              await server.start()
+
+              # status command
+              r, w = await asyncio.open_unix_connection('/tmp/ci-test.sock')
+              w.write(b'{\"cmd\":\"status\"}\n')
+              await w.drain()
+              data = json.loads(await r.readline())
+              w.close(); await w.wait_closed()
+              assert len(data['providers']) == 3
+              assert abs(data['total_remaining'] - 24.70) < 0.01
+              print(f'status: total_remaining=\${data[\"total_remaining\"]:.2f} OK')
+
+              # push_tps command
+              r, w = await asyncio.open_unix_connection('/tmp/ci-test.sock')
+              w.write(b'{\"cmd\":\"push_tps\",\"provider\":\"claude\",\"tps\":55.5,\"tokens\":1000}\n')
+              await w.drain()
+              resp = json.loads(await r.readline())
+              w.close(); await w.wait_closed()
+              assert resp.get('ok') == True
+              print('push_tps: OK')
+
+              await server.stop()
+              await store.close()
+              print('Socket server test PASSED')
+
+          asyncio.run(run())
+          "
+
+      - name: Test waybar script (no daemon → error JSON)
+        run: |
+          rm -f /tmp/llm-monitor.sock
+          output=$(bash waybar/module.sh)
+          echo "Output: $output"
+          python3 -c "
+          import json, sys
+          data = json.loads('$output')
+          assert data.get('class') == 'llm-monitor-error', f'Expected error class, got: {data}'
+          print('Waybar fallback test PASSED')
+          "
+
+      - name: Test waybar script (with daemon → valid JSON)
+        run: |
+          cd $GITHUB_WORKSPACE
+          python3 -c "
+          import asyncio, sys, time
+          sys.path.insert(0, '.')
+          from daemon.store import Store
+          from daemon.server import SocketServer
+          from daemon.providers.base import ProviderStatus
+          from pathlib import Path
+
+          async def run():
+              store = Store(Path('/tmp/ci-waybar.db'))
+              await store.open()
+              statuses = [
+                  ProviderStatus('Claude', 20.0, 7.6, 0.23, 42.3, time.time()),
+              ]
+              async def get_statuses():
+                  return statuses
+              server = SocketServer('/tmp/llm-monitor.sock', store, get_statuses)
+              await server.start()
+              await asyncio.sleep(5)
+              await server.stop()
+              await store.close()
+          asyncio.run(run())
+          " &
+          BGPID=$!
+          sleep 1
+          output=$(bash waybar/module.sh)
+          echo "Output: $output"
+          python3 -c "
+          import json
+          data = json.loads('$output'.replace('\"', '\"'))
+          assert data.get('class') == 'llm-monitor', f'Expected llm-monitor class, got: {data}'
+          assert 'C:' in data.get('text', ''), f'Expected C: in text, got: {data}'
+          print('Waybar live test PASSED')
+          "
+          wait $BGPID
+
+  # ── 4. GitHub Release (tags only) ─────────────────────────────────────────
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-22.04
+    needs: [build, smoke-test]
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}-tarball
+          path: dist/
+
+      - name: Download deb artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}-deb
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "llm-credit-monitor v${{ needs.build.outputs.version }}"
+          body: |
+            ## llm-credit-monitor v${{ needs.build.outputs.version }}
+
+            Waybar용 LLM 크레딧·TPS 모니터 데몬 (Claude / Gemini / OpenAI)
+
+            ### 설치 방법
+
+            **tarball (범용):**
+            ```bash
+            tar -xzf llm-credit-monitor-${{ needs.build.outputs.version }}.tar.gz
+            cd llm-credit-monitor-${{ needs.build.outputs.version }}
+            bash install.sh
+            ```
+
+            **Debian/Ubuntu (.deb):**
+            ```bash
+            sudo dpkg -i llm-credit-monitor-${{ needs.build.outputs.version }}.deb
+            pip install aiohttp aiosqlite --user
+            ```
+
+            자세한 설치 안내는 [README](https://github.com/${{ github.repository }}/blob/main/README.md)를 참고하세요.
+
+            ### Installation (English)
+
+            See [README.en.md](https://github.com/${{ github.repository }}/blob/main/docs/README.en.md) for English instructions.
+
+            ### Checksums
+            Verify downloads with the accompanying `.sha256` files:
+            ```bash
+            sha256sum -c llm-credit-monitor-${{ needs.build.outputs.version }}.tar.gz.sha256
+            sha256sum -c llm-credit-monitor-${{ needs.build.outputs.version }}.deb.sha256
+            ```
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.deb
+            dist/*.deb.sha256
+          draft: false
+          prerelease: ${{ contains(needs.build.outputs.version, 'dev') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
