@@ -106,6 +106,7 @@ jobs:
           cp -r daemon           "dist/${ARTIFACT}/"
           cp -r waybar           "dist/${ARTIFACT}/"
           cp -r systemd          "dist/${ARTIFACT}/"
+          cp -r gui              "dist/${ARTIFACT}/"
           cp    config.example.toml "dist/${ARTIFACT}/"
           cp    requirements.txt    "dist/${ARTIFACT}/"
           cp    install.sh          "dist/${ARTIFACT}/"
@@ -152,12 +153,25 @@ jobs:
           # Daemon library
           cp -r "dist/${ARTIFACT}/daemon/"* "${PKG_DIR}/usr/lib/llm_usage_indicator/"
 
-          # Wrapper binary
+          # Wrapper binaries
           cat > "${PKG_DIR}/usr/bin/llm-usage-indicator" << 'WRAP'
           #!/usr/bin/env bash
           PYTHONPATH="/usr/lib" exec python3 -m llm_usage_indicator.main "$@"
           WRAP
           chmod +x "${PKG_DIR}/usr/bin/llm-usage-indicator"
+
+          cp "dist/${ARTIFACT}/gui/settings.py" \
+             "${PKG_DIR}/usr/lib/llm_usage_indicator/settings_gui.py"
+
+          cat > "${PKG_DIR}/usr/bin/llm-usage-indicator-settings" << 'WRAP'
+          #!/usr/bin/env bash
+          PYTHONPATH="/usr/lib" exec python3 -m llm_usage_indicator.settings_gui "$@"
+          WRAP
+          chmod +x "${PKG_DIR}/usr/bin/llm-usage-indicator-settings"
+
+          mkdir -p "${PKG_DIR}/usr/share/applications"
+          cp "dist/${ARTIFACT}/gui/llm-usage-indicator-settings.desktop" \
+             "${PKG_DIR}/usr/share/applications/"
 
           # Systemd user service
           cp "dist/${ARTIFACT}/systemd/llm-usage-indicator.service" \
@@ -200,7 +214,7 @@ jobs:
           Priority: optional
           Architecture: all
           Depends: python3 (>= 3.10), python3-pip
-          Recommends: waybar
+          Recommends: waybar, python3-gi, gir1.2-gtk-3.0
           Installed-Size: ${INSTALLED_SIZE}
           Maintainer: llm-usage-indicator contributors
           Description: LLM usage indicator for Waybar

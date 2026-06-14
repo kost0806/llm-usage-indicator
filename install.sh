@@ -107,6 +107,38 @@ cp "$SCRIPT_DIR/waybar/module.sh" "$WAYBAR_SCRIPTS/llm-monitor.sh"
 chmod +x "$WAYBAR_SCRIPTS/llm-monitor.sh"
 info "Waybar script installed: $WAYBAR_SCRIPTS/llm-monitor.sh"
 
+# ── Step 11: Install GUI settings app ────────────────────────────────────────
+info "Installing settings GUI..."
+
+# Check for PyGObject (python3-gi)
+if ! "$PYTHON" -c "import gi" 2>/dev/null; then
+    warn "python3-gi not found — settings GUI will not work."
+    warn "Install with: sudo apt install python3-gi gir1.2-gtk-3.0"
+else
+    info "python3-gi — OK"
+fi
+
+# Copy GUI script to lib dir
+cp "$SCRIPT_DIR/gui/settings.py" "$LIB_DIR/settings_gui.py"
+
+# Create settings launcher wrapper
+SETTINGS_BIN="$BIN_DIR/llm-usage-indicator-settings"
+cat > "$SETTINGS_BIN" << SETTINGS_EOF
+#!/usr/bin/env bash
+PYTHONPATH="\$HOME/.local/lib" exec python3 -m llm_usage_indicator.settings_gui "\$@"
+SETTINGS_EOF
+chmod +x "$SETTINGS_BIN"
+info "Settings launcher installed: $SETTINGS_BIN"
+
+# Install .desktop entry so it appears in app launchers
+APPS_DIR="$HOME/.local/share/applications"
+mkdir -p "$APPS_DIR"
+cp "$SCRIPT_DIR/gui/llm-usage-indicator-settings.desktop" "$APPS_DIR/"
+# Patch Exec path to use the installed wrapper
+sed -i "s|^Exec=.*|Exec=$SETTINGS_BIN|" "$APPS_DIR/llm-usage-indicator-settings.desktop"
+update-desktop-database "$APPS_DIR" 2>/dev/null || true
+info "Desktop entry installed: $APPS_DIR/llm-usage-indicator-settings.desktop"
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 info "Installation complete!"
@@ -129,3 +161,7 @@ echo "       Add the 'custom/llm-monitor' module to your Waybar config."
 echo ""
 echo "  6. Test the Waybar script:"
 echo "       $WAYBAR_SCRIPTS/llm-monitor.sh"
+echo ""
+echo "  7. Open the settings GUI:"
+echo "       $SETTINGS_BIN"
+echo "       (or search 'LLM Usage Indicator Settings' in your app launcher)"
