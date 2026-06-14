@@ -25,18 +25,32 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }
 fi
 info "Python $PY_VER — OK"
 
-# ── Step 2: Install dependencies ─────────────────────────────────────────────
+# ── Step 2: Node.js / npx check ──────────────────────────────────────────────
+info "Checking Node.js / npx..."
+NPX=$(command -v npx || true)
+if [ -z "$NPX" ]; then
+    warn "npx not found — ccusage CLI requires Node.js 18+."
+    warn "Install Node.js from https://nodejs.org/ or via your package manager:"
+    warn "  Ubuntu/Debian: sudo apt install nodejs npm"
+    warn "  Arch:          sudo pacman -S nodejs npm"
+    warn "The daemon will fail to fetch usage data until Node.js is installed."
+else
+    NODE_VER=$(node --version 2>/dev/null || echo "unknown")
+    info "Node.js $NODE_VER / npx — OK"
+fi
+
+# ── Step 3: Install Python dependencies ──────────────────────────────────────
 info "Installing Python dependencies..."
 "$PYTHON" -m pip install -r "$SCRIPT_DIR/requirements.txt" --user -q
 info "Dependencies installed."
 
-# ── Step 3: Create config directory ──────────────────────────────────────────
+# ── Step 4: Create config directory ──────────────────────────────────────────
 CONFIG_DIR="$HOME/.config/llm-credit-monitor"
 info "Creating config directory: $CONFIG_DIR"
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 
-# ── Step 4: Copy example config (skip if exists) ─────────────────────────────
+# ── Step 5: Copy example config (skip if exists) ─────────────────────────────
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 if [ -f "$CONFIG_FILE" ]; then
     warn "Config file already exists, skipping: $CONFIG_FILE"
@@ -44,29 +58,21 @@ else
     cp "$SCRIPT_DIR/config.example.toml" "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
     info "Created config: $CONFIG_FILE"
-    info "→ Edit $CONFIG_FILE to add your API keys before starting the daemon."
+    info "→ Edit $CONFIG_FILE to set your monthly budgets."
 fi
 
-# ── Step 5: Copy daemon library ───────────────────────────────────────────────
+# ── Step 6: Copy daemon library ───────────────────────────────────────────────
 LIB_DIR="$HOME/.local/lib/llm-credit-monitor"
 info "Installing daemon to: $LIB_DIR"
 mkdir -p "$LIB_DIR"
 cp -r "$SCRIPT_DIR/daemon/"* "$LIB_DIR/"
 info "Daemon library installed."
 
-# ── Step 6: Create wrapper script ────────────────────────────────────────────
+# ── Step 7: Create wrapper script ────────────────────────────────────────────
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 WRAPPER="$BIN_DIR/llm-credit-monitor"
 
-cat > "$WRAPPER" << 'WRAPPER_EOF'
-#!/usr/bin/env bash
-# llm-credit-monitor launcher wrapper
-PYTHONPATH="$HOME/.local/lib" exec python3 -m llm-credit-monitor "$@"
-WRAPPER_EOF
-
-# The module name uses a hyphen which Python can't import directly.
-# Use the full path approach instead.
 cat > "$WRAPPER" << WRAPPER_EOF
 #!/usr/bin/env bash
 PYTHONPATH="\$HOME/.local/lib" exec python3 -c "
@@ -80,7 +86,7 @@ WRAPPER_EOF
 chmod +x "$WRAPPER"
 info "Wrapper installed: $WRAPPER"
 
-# ── Step 7: Install and enable systemd service ───────────────────────────────
+# ── Step 8: Install and enable systemd service ───────────────────────────────
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 info "Installing systemd user service..."
 mkdir -p "$SYSTEMD_USER_DIR"
@@ -90,7 +96,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now llm-credit-monitor
 info "Service enabled and started."
 
-# ── Step 8: Install Waybar script ────────────────────────────────────────────
+# ── Step 9: Install Waybar script ────────────────────────────────────────────
 WAYBAR_SCRIPTS="$HOME/.config/waybar/scripts"
 info "Installing Waybar script..."
 mkdir -p "$WAYBAR_SCRIPTS"
@@ -103,20 +109,20 @@ echo ""
 info "Installation complete!"
 echo ""
 echo "Next steps:"
-echo "  1. Edit your API keys:"
+echo "  1. Edit your monthly budgets:"
 echo "       $CONFIG_FILE"
 echo ""
-echo "  2. Restart the daemon after editing config:"
+echo "  2. Log in with Claude Code CLI (no API key needed):"
+echo "       claude login"
+echo ""
+echo "  3. Restart the daemon after editing config:"
 echo "       systemctl --user restart llm-credit-monitor"
 echo ""
-echo "  3. Check daemon status:"
+echo "  4. Check daemon status:"
 echo "       systemctl --user status llm-credit-monitor"
 echo ""
-echo "  4. Add to Waybar config (see waybar/config-example.json):"
+echo "  5. Add to Waybar config (see waybar/config-example.json):"
 echo "       Add the 'custom/llm-monitor' module to your Waybar config."
-echo ""
-echo "  5. Test the socket:"
-echo "       echo '{\"cmd\":\"status\"}' | socat - UNIX-CONNECT:/tmp/llm-monitor.sock"
 echo ""
 echo "  6. Test the Waybar script:"
 echo "       $WAYBAR_SCRIPTS/llm-monitor.sh"

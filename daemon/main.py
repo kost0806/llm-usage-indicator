@@ -11,21 +11,15 @@ Logs: ~/.local/share/llm-credit-monitor/monitor.log (rotating, 1MB x 3 files)
 import asyncio
 import logging
 import logging.handlers
-import os
 import signal
-import time
 from pathlib import Path
 from typing import Optional
 
-import aiohttp
-
-from .config import load_config, Config, ProviderConfig
+from .config import load_config, Config
 from .store import Store
 from .server import SocketServer
-from .providers.base import ProviderStatus, AbstractProvider
-from .providers.claude import ClaudeProvider
-from .providers.gemini import GeminiProvider
-from .providers.openai_p import OpenAIProvider
+from .providers.base import ProviderStatus
+from .providers.ccusage_p import CcusageProvider
 
 
 def _setup_logging(log_dir: Path) -> None:
@@ -49,75 +43,24 @@ class Daemon:
     def __init__(self) -> None:
         self._cfg: Config = load_config()
         self._store: Store = Store(self._cfg.db_path_expanded)
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._providers: list[AbstractProvider] = []
+        self._provider: Optional[CcusageProvider] = None
         self._cached_statuses: list[ProviderStatus] = []
         self._server: Optional[SocketServer] = None
         self._shutdown_event = asyncio.Event()
 
-    def _build_providers(self) -> list[AbstractProvider]:
-        assert self._session is not None
-        providers: list[AbstractProvider] = []
-
-        def _maybe_add(
-            provider_cfg: ProviderConfig,
-            cls: type,
-            name: str,
-        ) -> None:
-            if not provider_cfg.enabled:
-                logger.info("Provider %s is disabled, skipping", name)
-                return
-            if not provider_cfg.api_key or provider_cfg.api_key.endswith("..."):
-                logger.warning("Provider %s has no API key configured, skipping", name)
-                return
-            providers.append(
-                cls(
-                    api_key=provider_cfg.api_key,
-                    budget_usd=provider_cfg.budget_usd,
-                    store=self._store,
-                    session=self._session,
-                )
-            )
-            logger.info("Provider %s enabled (budget $%.2f)", name, provider_cfg.budget_usd)
-
-        _maybe_add(self._cfg.claude, ClaudeProvider, "Claude")
-        _maybe_add(self._cfg.gemini, GeminiProvider, "Gemini")
-        _maybe_add(self._cfg.openai, OpenAIProvider, "OpenAI")
-        return providers
-
-    async def _poll_provider(self, provider: AbstractProvider) -> Optional[ProviderStatus]:
-        """Poll a single provider; return cached status on failure."""
-        try:
-            status = await provider.fetch_status()
-            logger.debug(
-                "%s: remaining=$%.2f today=$%.4f",
-                status.name, status.remaining, status.spent_today,
-            )
-            return status
-        except Exception as exc:
-            logger.warning("Provider poll failed (%s): %s", type(provider).__name__, exc)
-            return None
-
     async def _poll_all_once(self) -> None:
-        """Poll all providers in parallel; update cache with successful results."""
-        results = await asyncio.gather(
-            *[self._poll_provider(p) for p in self._providers],
-            return_exceptions=False,
-        )
-        new_statuses = []
-        for i, result in enumerate(results):
-            if result is not None:
-                new_statuses.append(result)
-            elif i < len(self._cached_statuses):
-                # Keep stale cache value so status is never empty.
-                new_statuses.append(self._cached_statuses[i])
-        self._cached_statuses = new_statuses
+        assert self._provider is not None
+        try:
+            statuses = await self._provider.fetch_all_statuses()
+            self._cached_statuses = statuses
+        except Exception as exc:
+            logger.warning("ccusage poll failed: %s", exc)
 
     async def _get_cached_statuses(self) -> list[ProviderStatus]:
         return list(self._cached_statuses)
 
     async def _polling_loop(self) -> None:
-        interval = self._cfg.general.poll_interval_usage
+        interval = self._cfg.general.poll_interval
         logger.info("Polling loop started (interval=%ds)", interval)
         while not self._shutdown_event.is_set():
             await self._poll_all_once()
@@ -135,18 +78,14 @@ class Daemon:
 
         await self._store.open()
 
-        self._session = aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=10),
-            headers={"User-Agent": "llm-credit-monitor/1.0"},
+        self._provider = CcusageProvider(
+            budgets=self._cfg.budgets,
+            store=self._store,
+            ccusage_cmd=self._cfg.general.ccusage_cmd,
         )
 
-        self._providers = self._build_providers()
-        if not self._providers:
-            logger.warning("No providers configured — daemon running with empty status")
-
         # Initial poll so status is available immediately.
-        if self._providers:
-            await self._poll_all_once()
+        await self._poll_all_once()
 
         self._server = SocketServer(
             socket_path=self._cfg.general.socket_path,
@@ -155,7 +94,6 @@ class Daemon:
         )
         await self._server.start()
 
-        # Register signal handlers for graceful shutdown.
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, self._shutdown_event.set)
@@ -169,8 +107,6 @@ class Daemon:
         logger.info("Shutting down llm-credit-monitor")
         if self._server:
             await self._server.stop()
-        if self._session:
-            await self._session.close()
         await self._store.close()
         logger.info("Shutdown complete")
 

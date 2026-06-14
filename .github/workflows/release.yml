@@ -59,9 +59,7 @@ jobs:
           from daemon.config import load_config
           from daemon.store import Store
           from daemon.providers.base import ProviderStatus, AbstractProvider
-          from daemon.providers.claude import ClaudeProvider
-          from daemon.providers.gemini import GeminiProvider
-          from daemon.providers.openai_p import OpenAIProvider
+          from daemon.providers.ccusage_p import CcusageProvider
           from daemon.server import SocketServer
           print('All imports OK')
           "
@@ -313,6 +311,74 @@ jobs:
               await server.stop()
               await store.close()
               print('Socket server test PASSED')
+
+          asyncio.run(run())
+          "
+
+      - name: Test CcusageProvider parsing
+        run: |
+          cd $GITHUB_WORKSPACE
+          python3 -c "
+          import sys, time
+          sys.path.insert(0, '.')
+          from daemon.providers.ccusage_p import CcusageProvider, _model_to_provider
+          from daemon.store import Store
+          from pathlib import Path
+          import asyncio, datetime
+
+          # Unit-test model→provider mapping
+          assert _model_to_provider('claude-sonnet-4-6') == 'Claude'
+          assert _model_to_provider('gemini-1.5-pro') == 'Gemini'
+          assert _model_to_provider('gpt-4o') == 'OpenAI'
+          assert _model_to_provider('o3-mini') == 'OpenAI'
+          assert _model_to_provider('unknown-model') == 'Other'
+          print('Model→provider mapping OK')
+
+          # Unit-test JSON parsing with sample ccusage output
+          today = datetime.date.today().isoformat()
+          sample = {
+              'daily': [
+                  {
+                      'period': '2026-06-01',
+                      'modelBreakdowns': [
+                          {'modelName': 'claude-sonnet-4-6', 'cost': 5.0},
+                          {'modelName': 'gpt-4o', 'cost': 2.0},
+                      ],
+                      'totalCost': 7.0,
+                  },
+                  {
+                      'period': today,
+                      'modelBreakdowns': [
+                          {'modelName': 'claude-opus-4-8', 'cost': 1.5},
+                          {'modelName': 'gpt-4o', 'cost': 0.3},
+                      ],
+                      'totalCost': 1.8,
+                  },
+              ],
+              'totals': {'totalCost': 8.8},
+          }
+
+          budgets = {'Claude': 20.0, 'OpenAI': 10.0}
+
+          async def run():
+              store = Store(Path('/tmp/ci-ccusage.db'))
+              await store.open()
+              provider = CcusageProvider(budgets=budgets, store=store)
+              statuses = provider._parse_daily_data(sample)
+
+              claude = next(s for s in statuses if s.name == 'Claude')
+              openai = next(s for s in statuses if s.name == 'OpenAI')
+
+              assert abs(claude.spent_total - 6.5) < 0.01, f'Expected 6.5 got {claude.spent_total}'
+              assert abs(claude.spent_today - 1.5) < 0.01, f'Expected 1.5 got {claude.spent_today}'
+              assert claude.budget_usd == 20.0
+              assert abs(openai.spent_total - 2.3) < 0.01, f'Expected 2.3 got {openai.spent_total}'
+              assert abs(openai.spent_today - 0.3) < 0.01, f'Expected 0.3 got {openai.spent_today}'
+              print(f'Claude: total=\${claude.spent_total:.2f} today=\${claude.spent_today:.2f} remaining=\${claude.remaining:.2f}')
+              print(f'OpenAI: total=\${openai.spent_total:.2f} today=\${openai.spent_today:.2f} remaining=\${openai.remaining:.2f}')
+
+              await store.close()
+              print('CcusageProvider parsing test PASSED')
 
           asyncio.run(run())
           "
