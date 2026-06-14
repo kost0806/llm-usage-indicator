@@ -143,24 +143,19 @@ jobs:
 
           # Package structure
           mkdir -p "${PKG_DIR}/DEBIAN"
-          mkdir -p "${PKG_DIR}/usr/lib/llm-credit-monitor"
+          mkdir -p "${PKG_DIR}/usr/lib/llm_credit_monitor"
           mkdir -p "${PKG_DIR}/usr/bin"
           mkdir -p "${PKG_DIR}/usr/share/doc/llm-credit-monitor"
           mkdir -p "${PKG_DIR}/usr/lib/systemd/user"
           mkdir -p "${PKG_DIR}/etc/llm-credit-monitor"
 
           # Daemon library
-          cp -r "dist/${ARTIFACT}/daemon/"* "${PKG_DIR}/usr/lib/llm-credit-monitor/"
+          cp -r "dist/${ARTIFACT}/daemon/"* "${PKG_DIR}/usr/lib/llm_credit_monitor/"
 
           # Wrapper binary
           cat > "${PKG_DIR}/usr/bin/llm-credit-monitor" << 'WRAP'
           #!/usr/bin/env bash
-          PYTHONPATH="/usr/lib/llm-credit-monitor" exec python3 -c "
-          import sys
-          sys.path.insert(0, '/usr/lib/llm-credit-monitor')
-          from main import main
-          main()
-          " "$@"
+          PYTHONPATH="/usr/lib" exec python3 -m llm_credit_monitor.main "$@"
           WRAP
           chmod +x "${PKG_DIR}/usr/bin/llm-credit-monitor"
 
@@ -238,9 +233,12 @@ jobs:
 
   # ── 3. Integration smoke test ─────────────────────────────────────────────
   smoke-test:
-    name: Smoke test
-    runs-on: ubuntu-22.04
+    name: Smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     needs: build
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
 
     steps:
       - uses: actions/checkout@v4
