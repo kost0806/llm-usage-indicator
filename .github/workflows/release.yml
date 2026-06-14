@@ -71,8 +71,11 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          bash -n waybar/module.sh && echo "waybar/module.sh OK"
+          bash -n waybar/module.sh  && echo "waybar/module.sh OK"
           bash -n install.sh        && echo "install.sh OK"
+          bash -n build-deb.sh      && echo "build-deb.sh OK"
+          bash -n debian/postinst   && echo "debian/postinst OK"
+          bash -n debian/prerm      && echo "debian/prerm OK"
 
   # ── 2. Resolve version ───────────────────────────────────────────────────
   version:
@@ -161,208 +164,14 @@ jobs:
 
       - name: Create Debian package
         run: |
-          ARTIFACT="${{ needs.version.outputs.artifact_name }}"
           VERSION="${{ needs.version.outputs.version }}"
-          PKG_DIR="dist/deb/${ARTIFACT}"
-
-          # Package structure
-          mkdir -p "${PKG_DIR}/DEBIAN"
-          mkdir -p "${PKG_DIR}/usr/lib/llm_usage_indicator"
-          mkdir -p "${PKG_DIR}/usr/bin"
-          mkdir -p "${PKG_DIR}/usr/share/applications"
-          mkdir -p "${PKG_DIR}/usr/share/llm-usage-indicator"
-          mkdir -p "${PKG_DIR}/usr/share/doc/llm-usage-indicator"
-          mkdir -p "${PKG_DIR}/usr/lib/systemd/user"
-          mkdir -p "${PKG_DIR}/etc/llm-usage-indicator"
-
-          # Daemon library
-          cp -r "dist/${ARTIFACT}/daemon/"* "${PKG_DIR}/usr/lib/llm_usage_indicator/"
-
-          # Wrapper binaries
-          cat > "${PKG_DIR}/usr/bin/llm-usage-indicator" << 'WRAP'
-          #!/usr/bin/env bash
-          PYTHONPATH="/usr/lib" exec python3 -m llm_usage_indicator.main "$@"
-          WRAP
-          chmod +x "${PKG_DIR}/usr/bin/llm-usage-indicator"
-
-          cp "dist/${ARTIFACT}/gui/settings.py" \
-             "${PKG_DIR}/usr/lib/llm_usage_indicator/settings_gui.py"
-          cp "dist/${ARTIFACT}/gui/tray.py" \
-             "${PKG_DIR}/usr/lib/llm_usage_indicator/tray.py"
-
-          cat > "${PKG_DIR}/usr/bin/llm-usage-indicator-settings" << 'WRAP'
-          #!/usr/bin/env bash
-          PYTHONPATH="/usr/lib" exec python3 -m llm_usage_indicator.settings_gui "$@"
-          WRAP
-          chmod +x "${PKG_DIR}/usr/bin/llm-usage-indicator-settings"
-
-          cat > "${PKG_DIR}/usr/bin/llm-usage-indicator-tray" << 'WRAP'
-          #!/usr/bin/env bash
-          PYTHONPATH="/usr/lib" exec python3 -m llm_usage_indicator.tray "$@"
-          WRAP
-          chmod +x "${PKG_DIR}/usr/bin/llm-usage-indicator-tray"
-
-          cp "dist/${ARTIFACT}/gui/llm-usage-indicator-settings.desktop" \
-             "${PKG_DIR}/usr/share/applications/"
-
-          # Tray autostart desktop file (installed per-user in postinst)
-          cp "dist/${ARTIFACT}/gui/llm-usage-indicator-tray.desktop" \
-             "${PKG_DIR}/usr/share/llm-usage-indicator/"
-
-          # Systemd user service
-          cp "dist/${ARTIFACT}/systemd/llm-usage-indicator.service" \
-             "${PKG_DIR}/usr/lib/systemd/user/"
-
-          # Example config
-          cp "dist/${ARTIFACT}/config.example.toml" \
-             "${PKG_DIR}/etc/llm-usage-indicator/"
-
-          # Waybar script
-          mkdir -p "${PKG_DIR}/usr/share/llm-usage-indicator/waybar"
-          cp "dist/${ARTIFACT}/waybar/"* \
-             "${PKG_DIR}/usr/share/llm-usage-indicator/waybar/"
-
-          # Docs
-          cp "dist/${ARTIFACT}/README.md"        "${PKG_DIR}/usr/share/doc/llm-usage-indicator/" 2>/dev/null || true
-          cp "dist/${ARTIFACT}/docs/README.en.md" "${PKG_DIR}/usr/share/doc/llm-usage-indicator/" 2>/dev/null || true
-          cp "dist/${ARTIFACT}/requirements.txt"  "${PKG_DIR}/usr/share/doc/llm-usage-indicator/"
-
-          # Postinst script
-          cat > "${PKG_DIR}/DEBIAN/postinst" << 'POSTINST'
-          #!/bin/bash
-          set -e
-
-          # Determine the real user: prefer SUDO_USER, fall back to DBUS_SESSION_BUS_ADDRESS owner
-          if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
-              REAL_USER="$SUDO_USER"
-          elif [ -n "${PKEXEC_UID:-}" ]; then
-              REAL_USER=$(getent passwd "$PKEXEC_UID" | cut -d: -f1)
-          else
-              REAL_USER=$(logname 2>/dev/null || true)
-          fi
-
-          if [ -z "$REAL_USER" ] || [ "$REAL_USER" = "root" ]; then
-              echo "[llm-usage-indicator] Could not detect install user; run post-setup manually:"
-              echo "  llm-usage-indicator-setup"
-              exit 0
-          fi
-
-          REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
-
-          as_user() {
-              runuser -u "$REAL_USER" -- env HOME="$REAL_HOME" XDG_RUNTIME_DIR="/run/user/$(id -u "$REAL_USER")" "$@"
-          }
-
-          # 1. Create config dir and copy default config if absent
-          CONFIG_DIR="$REAL_HOME/.config/llm-usage-indicator"
-          CONFIG_FILE="$CONFIG_DIR/config.toml"
-          as_user mkdir -p "$CONFIG_DIR"
-          as_user chmod 700 "$CONFIG_DIR"
-          if [ ! -f "$CONFIG_FILE" ]; then
-              as_user cp /etc/llm-usage-indicator/config.example.toml "$CONFIG_FILE"
-              as_user chmod 600 "$CONFIG_FILE"
-              echo "[llm-usage-indicator] Default config created at $CONFIG_FILE"
-              echo "  → Edit monthly budgets: $CONFIG_FILE"
-          else
-              echo "[llm-usage-indicator] Existing config kept: $CONFIG_FILE"
-          fi
-
-          # 2. Install Waybar script
-          WAYBAR_DIR="$REAL_HOME/.config/waybar/scripts"
-          as_user mkdir -p "$WAYBAR_DIR"
-          as_user cp /usr/share/llm-usage-indicator/waybar/module.sh "$WAYBAR_DIR/llm-monitor.sh"
-          as_user chmod +x "$WAYBAR_DIR/llm-monitor.sh"
-          echo "[llm-usage-indicator] Waybar script installed: $WAYBAR_DIR/llm-monitor.sh"
-
-          # 3. Register desktop entry for the current user
-          update-desktop-database /usr/share/applications 2>/dev/null || true
-
-          # 4. Enable and start systemd user service
-          SYSTEMD_USER_DIR="$REAL_HOME/.config/systemd/user"
-          as_user mkdir -p "$SYSTEMD_USER_DIR"
-          as_user cp /usr/lib/systemd/user/llm-usage-indicator.service "$SYSTEMD_USER_DIR/"
-
-          if as_user systemctl --user daemon-reload 2>/dev/null; then
-              as_user systemctl --user enable --now llm-usage-indicator 2>/dev/null \
-                  && echo "[llm-usage-indicator] Service enabled and started." \
-                  || echo "[llm-usage-indicator] WARNING: failed to start service; run: systemctl --user enable --now llm-usage-indicator"
-          else
-              echo "[llm-usage-indicator] No active user session — service will start at next login."
-          fi
-
-          # 5. Register XDG autostart for the tray indicator
-          AUTOSTART_DIR="$REAL_HOME/.config/autostart"
-          as_user mkdir -p "$AUTOSTART_DIR"
-          cp /usr/share/llm-usage-indicator/llm-usage-indicator-tray.desktop \
-             "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
-          chown "$REAL_USER" "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
-          echo "[llm-usage-indicator] Autostart entry installed (tray starts on next login)."
-
-          # 6. Start tray now if user has an active display session
-          USER_DISPLAY=$(as_user bash -c 'echo ${DISPLAY:-${WAYLAND_DISPLAY:-}}' 2>/dev/null || true)
-          if [ -n "$USER_DISPLAY" ]; then
-              as_user pkill -f "llm_usage_indicator.tray" 2>/dev/null || true
-              as_user bash -c 'nohup /usr/bin/llm-usage-indicator-tray >/dev/null 2>&1 &'
-              echo "[llm-usage-indicator] Tray indicator started."
-          else
-              echo "[llm-usage-indicator] No display session — tray will start at next login."
-          fi
-
-          echo ""
-          echo "[llm-usage-indicator] Installation complete!"
-          echo "  Usage is now shown in the top bar (🤖 C:\$xx.xx …)"
-          echo "  Open settings: llm-usage-indicator-settings"
-          POSTINST
-          chmod 755 "${PKG_DIR}/DEBIAN/postinst"
-
-          # Prerm script — stop and disable service before removal
-          cat > "${PKG_DIR}/DEBIAN/prerm" << 'PRERM'
-          #!/bin/bash
-          set -e
-
-          if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
-              REAL_USER="$SUDO_USER"
-          elif [ -n "${PKEXEC_UID:-}" ]; then
-              REAL_USER=$(getent passwd "$PKEXEC_UID" | cut -d: -f1)
-          else
-              REAL_USER=$(logname 2>/dev/null || true)
-          fi
-
-          if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
-              REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
-              as_user() {
-                  runuser -u "$REAL_USER" -- env HOME="$REAL_HOME" XDG_RUNTIME_DIR="/run/user/$(id -u "$REAL_USER")" "$@"
-              }
-              as_user systemctl --user disable --now llm-usage-indicator 2>/dev/null || true
-              as_user pkill -f "llm_usage_indicator.tray" 2>/dev/null || true
-              rm -f "$REAL_HOME/.config/autostart/llm-usage-indicator-tray.desktop"
-          fi
-          PRERM
-          chmod 755 "${PKG_DIR}/DEBIAN/prerm"
-
-          # Calculate installed size (kB)
-          INSTALLED_SIZE=$(du -sk "${PKG_DIR}" | cut -f1)
-
-          # Control file
-          # Note: version must be a valid Debian version (strip 'dev.' prefix for deb)
+          chmod +x build-deb.sh
+          bash build-deb.sh "$VERSION"
+          # build-deb.sh writes to dist/llm-usage-indicator_<ver>_all.deb
+          # Rename to the artifact name expected by subsequent steps
+          ARTIFACT="${{ needs.version.outputs.artifact_name }}"
           DEB_VERSION=$(echo "$VERSION" | sed 's/-dev\./~dev./g')
-          cat > "${PKG_DIR}/DEBIAN/control" << CONTROL
-          Package: llm-usage-indicator
-          Version: ${DEB_VERSION}
-          Section: utils
-          Priority: optional
-          Architecture: all
-          Depends: python3 (>= 3.10), python3-pip, python3-gi, gir1.2-gtk-3.0
-          Recommends: gir1.2-appindicator3-0.1, gnome-shell-extension-appindicator, waybar
-          Installed-Size: ${INSTALLED_SIZE}
-          Maintainer: llm-usage-indicator contributors
-          Description: LLM usage indicator for Waybar
-           Displays Claude/Gemini/OpenAI usage, daily spend,
-           and remaining budget in Waybar status bar on Ubuntu 22.04+.
-          CONTROL
-
-          # Build deb
-          dpkg-deb --build "${PKG_DIR}" "dist/${ARTIFACT}.deb"
+          mv "dist/llm-usage-indicator_${DEB_VERSION}_all.deb" "dist/${ARTIFACT}.deb"
           sha256sum "dist/${ARTIFACT}.deb" > "dist/${ARTIFACT}.deb.sha256"
           echo "Deb package size: $(du -sh "dist/${ARTIFACT}.deb" | cut -f1)"
 
