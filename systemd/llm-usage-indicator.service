@@ -9,6 +9,8 @@ ExecStart=%h/.local/bin/llm-usage-indicator
 Restart=on-failure
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target
