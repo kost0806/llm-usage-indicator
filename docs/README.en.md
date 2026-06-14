@@ -1,6 +1,6 @@
 # llm-credit-monitor
 
-> **Real-time Claude · Gemini · OpenAI credit balance, daily spend, and TPS in your Waybar status bar**
+> Show Claude · Gemini · OpenAI today's spend and remaining credits in your Waybar status bar — **no API keys required**
 
 <p align="center">
   <a href="../../../actions/workflows/release.yml">
@@ -11,42 +11,54 @@
 
 ---
 
-## Table of Contents
-
-1. [Features](#features)
-2. [Requirements](#requirements)
-3. [Quick Install](#quick-install)
-4. [Manual Install](#manual-install)
-5. [Configuration](#configuration)
-6. [Waybar Integration](#waybar-integration)
-7. [Usage](#usage)
-8. [How It Works](#how-it-works)
-9. [TPS Measurement](#tps-measurement)
-10. [Troubleshooting](#troubleshooting)
-11. [License](#license)
-
----
-
 ## Features
 
 | | |
 |---|---|
-| **Providers** | Claude (Anthropic) · Gemini (Google AI) · OpenAI |
-| **Displays** | Credit balance · Today's spend ($) · TPS (tokens/sec) |
-| **Memory** | Resident daemon **< 10 MB** |
+| **No API keys** | Works with web login only (e.g. `claude login`) |
+| **Providers** | Claude · Gemini · OpenAI · Copilot (auto-detected from model name) |
+| **Displays** | Today's spend ($) · remaining credits ($) · detailed tooltip |
+| **Data source** | [ccusage](https://github.com/ryoppippi/ccusage) — reads local JSONL conversation logs |
 | **Platform** | Ubuntu 22.04+ (Wayland & X11) |
 | **Auto-start** | `systemd --user` service |
-| **Resilient** | API failures use cached values; daemon never crashes |
-| **Dependencies** | Python 3.10+, `aiohttp`, `aiosqlite` — nothing else |
+| **Dependencies** | Python 3.10+, Node.js 18+, `aiosqlite` |
+
+### How it works
+
+ccusage reads conversation logs stored locally at `~/.claude/projects/**/*.jsonl` and similar paths, then aggregates cost by model.  
+**No outbound API calls. No internet required. No API keys.**
+
+```
+~/.claude/projects/**/*.jsonl   ← Claude Code conversation logs (local)
+           │
+           ▼
+  npx ccusage@latest daily      ← runs every 60 seconds
+           │
+           ▼
+    CcusageProvider              ← groups models by provider prefix
+           │
+           ▼
+     SQLite Store                ← 7-day snapshot history
+           │
+           ▼
+   Unix Socket Server            ← JSON IPC (/tmp/llm-monitor.sock)
+           │
+           ▼
+      module.sh                  ← Waybar custom/script (every 30s)
+           │
+           ▼
+      Waybar status bar          ← 🤖 C:$13.50 ↑$1.50  O:$7.70 ↑$0.30
+```
 
 ---
 
 ## Requirements
 
 - Ubuntu 22.04+ (any Debian-based distro should work)
-- Python 3.10+
+- Python 3.10+ (for `aiosqlite`)
+- Node.js 18+ with npx (for `ccusage`)
 - [Waybar](https://github.com/Alexays/Waybar)
-- Internet access for provider API calls
+- Claude Code CLI logged in via `claude login`
 
 ---
 
@@ -55,17 +67,10 @@
 ### From release tarball (recommended)
 
 ```bash
-# 1. Download latest release
 VERSION=$(curl -s https://api.github.com/repos/kost0806/ca-usage-indicator/releases/latest \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'][1:])")
 
 curl -LO "https://github.com/kost0806/ca-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.tar.gz"
-
-# 2. Verify checksum (optional but recommended)
-curl -LO "https://github.com/kost0806/ca-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.tar.gz.sha256"
-sha256sum -c "llm-credit-monitor-${VERSION}.tar.gz.sha256"
-
-# 3. Extract and install
 tar -xzf "llm-credit-monitor-${VERSION}.tar.gz"
 cd "llm-credit-monitor-${VERSION}"
 bash install.sh
@@ -79,9 +84,7 @@ VERSION=$(curl -s https://api.github.com/repos/kost0806/ca-usage-indicator/relea
 
 curl -LO "https://github.com/kost0806/ca-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.deb"
 sudo dpkg -i "llm-credit-monitor-${VERSION}.deb"
-
-# Install Python dependencies (not handled by the .deb)
-pip install aiohttp aiosqlite --user
+pip install aiosqlite --user
 ```
 
 ### From source
@@ -94,15 +97,48 @@ bash install.sh
 
 ---
 
-## Manual Install
+## Configuration
 
-Step-by-step installation without `install.sh`:
+Config file: `~/.config/llm-credit-monitor/config.toml`
+
+```toml
+[general]
+poll_interval = 60                       # how often to run ccusage (seconds)
+socket_path   = "/tmp/llm-monitor.sock"
+db_path       = "~/.local/share/llm-credit-monitor/data.db"
+ccusage_cmd   = "npx ccusage@latest"     # ccusage command (override if needed)
+
+# Monthly credit budgets in USD — used to calculate remaining balance
+[budgets]
+claude = 20.00
+gemini = 15.00
+openai = 10.00
+```
+
+**Providers are detected automatically from the model name prefix:**
+
+| Model prefix | Provider |
+|---|---|
+| `claude-*` | Claude |
+| `gemini-*` | Gemini |
+| `gpt-*`, `o1-*`, `o3-*`, `o4-*` | OpenAI |
+| `copilot-*` | Copilot |
+
+After editing the config, restart the daemon:
 
 ```bash
-# 1. Install Python dependencies
-pip install aiohttp aiosqlite --user
+systemctl --user restart llm-credit-monitor
+```
 
-# 2. Create config directory and copy example config
+---
+
+## Manual Install
+
+```bash
+# 1. Install Python dependency
+pip install aiosqlite --user
+
+# 2. Copy config
 mkdir -p ~/.config/llm-credit-monitor
 cp config.example.toml ~/.config/llm-credit-monitor/config.toml
 chmod 600 ~/.config/llm-credit-monitor/config.toml
@@ -113,15 +149,13 @@ cp -r daemon/* ~/.local/lib/llm-credit-monitor/
 
 # 4. Create launcher wrapper
 mkdir -p ~/.local/bin
-cat > ~/.local/bin/llm-credit-monitor << 'EOF'
+cat > ~/.local/bin/llm-credit-monitor << 'WRAP'
 #!/usr/bin/env bash
 PYTHONPATH="$HOME/.local/lib/llm-credit-monitor" exec python3 -c "
-import sys
-sys.path.insert(0, '$HOME/.local/lib/llm-credit-monitor')
-from main import main
-main()
+import sys; sys.path.insert(0, '$HOME/.local/lib/llm-credit-monitor')
+from main import main; main()
 " "$@"
-EOF
+WRAP
 chmod +x ~/.local/bin/llm-credit-monitor
 
 # 5. Register systemd user service
@@ -138,51 +172,11 @@ chmod +x ~/.config/waybar/scripts/llm-monitor.sh
 
 ---
 
-## Configuration
-
-Config file: `~/.config/llm-credit-monitor/config.toml`
-
-```toml
-[general]
-poll_interval_credits = 300   # Credit balance poll interval (seconds)
-poll_interval_usage   = 60    # Usage poll interval (seconds)
-waybar_refresh        = 30    # Waybar refresh interval (seconds)
-socket_path           = "/tmp/llm-monitor.sock"
-db_path               = "~/.local/share/llm-credit-monitor/data.db"
-
-[providers.claude]
-enabled    = true
-api_key    = "sk-ant-..."     # Anthropic API key
-budget_usd = 20.00            # Total purchased credits (manual)
-
-[providers.gemini]
-enabled    = true
-api_key    = "AIza..."        # Google AI API key
-budget_usd = 15.00
-
-[providers.openai]
-enabled    = true
-api_key    = "sk-..."         # OpenAI API key
-budget_usd = 10.00            # Used if credit_grants API is unavailable
-```
-
-> **Security:** The config file is created with `chmod 600` automatically.  
-> API keys can also be passed via environment variables:  
-> `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`
-
-After editing config, restart the daemon:
-
-```bash
-systemctl --user restart llm-credit-monitor
-```
-
----
-
 ## Waybar Integration
 
-### 1. Add the module to your Waybar config
+### 1. Add the module to your config
 
-Add to `~/.config/waybar/config`:
+`~/.config/waybar/config`:
 
 ```json
 "custom/llm-monitor": {
@@ -193,10 +187,10 @@ Add to `~/.config/waybar/config`:
 }
 ```
 
-Add `"custom/llm-monitor"` to your desired position (`modules-left` / `modules-center` / `modules-right`):
+Add `"custom/llm-monitor"` to your module position:
 
 ```json
-"modules-right": ["custom/llm-monitor", "clock", "..."]
+"modules-right": ["custom/llm-monitor", "clock"]
 ```
 
 ### 2. Optional CSS styling
@@ -224,10 +218,12 @@ pkill waybar && waybar &
 
 ## Usage
 
-### Check daemon status
+### Daemon management
 
 ```bash
-systemctl --user status llm-credit-monitor
+systemctl --user status llm-credit-monitor   # check status
+systemctl --user restart llm-credit-monitor  # restart
+systemctl --user stop llm-credit-monitor     # stop
 ```
 
 ### View logs
@@ -250,169 +246,84 @@ with socket.socket(socket.AF_UNIX) as s:
 "
 ```
 
-### Push a TPS event externally
+Example response:
 
-If you call an LLM API yourself and want to record the TPS:
+```json
+{
+  "providers": [
+    {
+      "name": "Claude",
+      "budget_usd": 20.00,
+      "spent_total": 6.50,
+      "spent_today": 1.50,
+      "remaining": 13.50,
+      "remaining_pct": 67.5,
+      "updated_at": 1749888000
+    }
+  ],
+  "total_remaining": 13.50,
+  "total_spent_today": 1.50,
+  "server_time": 1749888060
+}
+```
+
+### Debug ccusage directly
 
 ```bash
-python3 -c "
-import socket, json
-payload = json.dumps({
-    'cmd': 'push_tps',
-    'provider': 'claude',
-    'tps': 45.2,
-    'tokens': 820
-})
-with socket.socket(socket.AF_UNIX) as s:
-    s.connect('/tmp/llm-monitor.sock')
-    s.sendall((payload + '\n').encode())
-    print(s.recv(1024).decode())
-"
+npx ccusage@latest daily --json | python3 -m json.tool
 ```
-
-### Stop / restart the daemon
-
-```bash
-systemctl --user stop llm-credit-monitor
-systemctl --user restart llm-credit-monitor
-```
-
----
-
-## How It Works
-
-```
-┌──────────────────────────────────────────────┐
-│              llm-credit-monitor               │
-│                                               │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  │
-│  │  Claude  │  │  Gemini  │  │  OpenAI   │  │  ← asyncio parallel poll
-│  │ Provider │  │ Provider │  │  Provider │  │
-│  └────┬─────┘  └────┬─────┘  └─────┬─────┘  │
-│       │              │               │        │
-│       └──────────────┴───────────────┘        │
-│                      │                        │
-│             ┌────────▼────────┐               │
-│             │  SQLite Store   │               │  ← snapshots + TPS events
-│             └────────┬────────┘               │
-│                      │                        │
-│             ┌────────▼────────┐               │
-│             │  Unix Socket    │               │  ← JSON IPC
-│             │    Server       │               │
-│             └────────┬────────┘               │
-└──────────────────────┼────────────────────────┘
-                       │
-              ┌────────▼────────┐
-              │   module.sh     │  ← Waybar custom/script
-              │  (every 30s)    │
-              └────────┬────────┘
-                       │
-              ┌────────▼────────┐
-              │    Waybar       │  ← status bar display
-              └─────────────────┘
-```
-
-**Key design points:**
-
-- Each provider is polled **independently** via `asyncio.gather` — one failure doesn't affect others
-- On API failure: logs a `WARNING` and returns the last cached SQLite value; displays `--`
-- SQLite stores 7 days of snapshots (auto-pruned) and TPS events
-- Unix socket uses `chmod 600` — owner-only access
-- The `aiohttp` session is reused across all requests (not recreated per request)
-- SIGTERM / SIGINT triggers a graceful shutdown: socket closed, DB flushed, session closed
-
----
-
-## TPS Measurement
-
-The daemon cannot directly measure TPS because it does not intercept real LLM requests.  
-Two mechanisms are supported:
-
-**Method 1 — External push (recommended)**
-
-Wrap your LLM calls to measure and push TPS after each response.  
-Example for Claude:
-
-```python
-import time, socket, json
-import anthropic
-
-client = anthropic.Anthropic()
-
-def call_with_tps(model: str, messages: list, **kwargs):
-    t0 = time.perf_counter()
-    response = client.messages.create(model=model, messages=messages, **kwargs)
-    elapsed = time.perf_counter() - t0
-    tokens = response.usage.output_tokens
-    tps = tokens / elapsed if elapsed > 0 else 0.0
-
-    payload = json.dumps({
-        "cmd": "push_tps", "provider": "claude",
-        "tps": tps, "tokens": tokens
-    }) + "\n"
-    try:
-        with socket.socket(socket.AF_UNIX) as s:
-            s.settimeout(1)
-            s.connect("/tmp/llm-monitor.sock")
-            s.sendall(payload.encode())
-    except OSError:
-        pass  # daemon not running — ignore silently
-
-    return response
-```
-
-**Method 2 — API response metadata**
-
-No provider currently exposes per-request TPS through a polling API.  
-Without method 1, TPS displays as `--`.
 
 ---
 
 ## Troubleshooting
 
-### Daemon won't start
-
-```bash
-journalctl --user -u llm-credit-monitor -n 50
-# Or run directly to see the error:
-~/.local/bin/llm-credit-monitor
-```
-
 ### Waybar shows `🤖 --`
 
 ```bash
-# Is the socket there?
-ls -la /tmp/llm-monitor.sock
-
 # Is the daemon running?
 systemctl --user status llm-credit-monitor
 
-# Manual socket test
-python3 -c "
-import socket, json
-with socket.socket(socket.AF_UNIX) as s:
-    s.connect('/tmp/llm-monitor.sock')
-    s.sendall(b'{\"cmd\":\"status\"}\n')
-    print(s.recv(65536).decode())
-"
+# Does the socket exist?
+ls -la /tmp/llm-monitor.sock
+
+# Check logs for errors
+journalctl --user -u llm-credit-monitor -n 30
 ```
 
-### Credits show `--`
-
-Claude and Gemini do not provide official usage APIs:
-
-- **Claude:** No public Anthropic usage endpoint → falls back to local SQLite tracking
-- **Gemini:** No Google AI Studio usage API → same fallback
-- **OpenAI:** Queries `/v1/dashboard/billing/credit_grants` (requires org-level API key)
-
-Use the `push_tps` socket command to accumulate token counts, or set `budget_usd` and track spend externally.
-
-### API key errors
+### ccusage shows no data
 
 ```bash
-# Check config file exists and has correct permissions
-ls -la ~/.config/llm-credit-monitor/config.toml
-# Should show: -rw------- (600)
+# Run ccusage directly
+npx ccusage@latest daily
+
+# Check that conversation logs exist
+ls ~/.claude/projects/
+```
+
+Usage will be zero if you haven't had any Claude Code conversations yet.
+
+### Node.js / npx not found
+
+```bash
+# Ubuntu/Debian
+sudo apt install nodejs npm
+
+# Or via nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+nvm install 22
+```
+
+If npx is installed at a non-standard path, set the full path in config:
+
+```toml
+ccusage_cmd = "/usr/local/bin/npx ccusage@latest"
+```
+
+### Daemon won't start
+
+```bash
+# Run directly to see the error
+~/.local/bin/llm-credit-monitor
 ```
 
 ---
