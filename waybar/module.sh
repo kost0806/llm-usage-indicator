@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Waybar custom/script module for llm-credit-monitor.
+# Waybar custom/script module for llm-usage-indicator.
 # Connects to the daemon's Unix socket and formats provider status as JSON.
 #
 # Usage (normal):  called by Waybar every `interval` seconds

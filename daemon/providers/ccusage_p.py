@@ -1,5 +1,5 @@
 """
-ccusage provider for llm-credit-monitor.
+ccusage provider for llm-usage-indicator.
 
 Reads local Claude Code / Gemini CLI / OpenAI CLI usage data via
 the ccusage CLI tool (https://github.com/ryoppippi/ccusage).
@@ -122,8 +122,28 @@ class CcusageProvider:
 
         return statuses
 
+    def _zero_statuses(self) -> list[ProviderStatus]:
+        """Return zero-usage entries for all configured budget providers."""
+        now = time.time()
+        return [
+            ProviderStatus(
+                name=provider,
+                budget_usd=self._budgets[provider],
+                spent_total=0.0,
+                spent_today=0.0,
+                updated_at=now,
+            )
+            for provider in sorted(self._budgets.keys())
+            if self._budgets[provider] > 0
+        ]
+
     async def fetch_all_statuses(self) -> list[ProviderStatus]:
-        data = await self._run_ccusage()
+        try:
+            data = await self._run_ccusage()
+        except Exception as exc:
+            logger.warning("ccusage unavailable, reporting zero usage: %s", exc)
+            return self._zero_statuses()
+
         statuses = self._parse_daily_data(data)
 
         for status in statuses:
