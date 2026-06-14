@@ -134,34 +134,71 @@ info "Settings launcher installed: $SETTINGS_BIN"
 APPS_DIR="$HOME/.local/share/applications"
 mkdir -p "$APPS_DIR"
 cp "$SCRIPT_DIR/gui/llm-usage-indicator-settings.desktop" "$APPS_DIR/"
-# Patch Exec path to use the installed wrapper
 sed -i "s|^Exec=.*|Exec=$SETTINGS_BIN|" "$APPS_DIR/llm-usage-indicator-settings.desktop"
 update-desktop-database "$APPS_DIR" 2>/dev/null || true
 info "Desktop entry installed: $APPS_DIR/llm-usage-indicator-settings.desktop"
+
+# ── Step 12: Install tray indicator ──────────────────────────────────────────
+info "Installing GNOME tray indicator..."
+
+# Check for AppIndicator3
+if ! "$PYTHON" -c "
+import gi
+gi.require_version('AppIndicator3', '0.1')
+from gi.repository import AppIndicator3
+" 2>/dev/null; then
+    warn "AppIndicator3 not found — tray indicator will not work."
+    warn "Install with: sudo apt install gir1.2-appindicator3-0.1 gnome-shell-extension-appindicator"
+else
+    info "AppIndicator3 — OK"
+fi
+
+# Copy tray script to lib dir
+cp "$SCRIPT_DIR/gui/tray.py" "$LIB_DIR/tray.py"
+
+# Create tray launcher wrapper
+TRAY_BIN="$BIN_DIR/llm-usage-indicator-tray"
+cat > "$TRAY_BIN" << TRAY_EOF
+#!/usr/bin/env bash
+PYTHONPATH="\$HOME/.local/lib" exec python3 -m llm_usage_indicator.tray "\$@"
+TRAY_EOF
+chmod +x "$TRAY_BIN"
+info "Tray launcher installed: $TRAY_BIN"
+
+# XDG autostart: launch tray on login
+AUTOSTART_DIR="$HOME/.config/autostart"
+mkdir -p "$AUTOSTART_DIR"
+cp "$SCRIPT_DIR/gui/llm-usage-indicator-tray.desktop" "$AUTOSTART_DIR/"
+sed -i "s|^Exec=.*|Exec=$TRAY_BIN|" "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
+info "Autostart entry installed: $AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
+
+# Start tray now if a display is available
+if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+    pkill -f "llm_usage_indicator.tray" 2>/dev/null || true
+    nohup "$TRAY_BIN" >/dev/null 2>&1 &
+    info "Tray indicator started."
+else
+    info "No display detected — tray will start at next login."
+fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 info "Installation complete!"
 echo ""
 echo "Next steps:"
-echo "  1. Edit your monthly budgets:"
+echo "  1. Edit your monthly budgets (or use the settings GUI):"
 echo "       $CONFIG_FILE"
 echo ""
 echo "  2. Log in with Claude Code CLI (no API key needed):"
 echo "       claude login"
 echo ""
-echo "  3. Restart the daemon after editing config:"
-echo "       systemctl --user restart llm-usage-indicator"
+echo "  3. The tray icon should already be visible in the top bar."
+echo "     If not, log out and back in, or run manually:"
+echo "       $TRAY_BIN"
 echo ""
-echo "  4. Check daemon status:"
-echo "       systemctl --user status llm-usage-indicator"
-echo ""
-echo "  5. Add to Waybar config (see waybar/config-example.json):"
-echo "       Add the 'custom/llm-monitor' module to your Waybar config."
-echo ""
-echo "  6. Test the Waybar script:"
-echo "       $WAYBAR_SCRIPTS/llm-monitor.sh"
-echo ""
-echo "  7. Open the settings GUI:"
+echo "  4. Open settings:"
 echo "       $SETTINGS_BIN"
-echo "       (or search 'LLM Usage Indicator Settings' in your app launcher)"
+echo "       (or right-click the tray icon → Settings…)"
+echo ""
+echo "  5. Restart the daemon after editing config:"
+echo "       systemctl --user restart llm-usage-indicator"

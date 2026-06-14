@@ -162,6 +162,8 @@ jobs:
 
           cp "dist/${ARTIFACT}/gui/settings.py" \
              "${PKG_DIR}/usr/lib/llm_usage_indicator/settings_gui.py"
+          cp "dist/${ARTIFACT}/gui/tray.py" \
+             "${PKG_DIR}/usr/lib/llm_usage_indicator/tray.py"
 
           cat > "${PKG_DIR}/usr/bin/llm-usage-indicator-settings" << 'WRAP'
           #!/usr/bin/env bash
@@ -169,9 +171,19 @@ jobs:
           WRAP
           chmod +x "${PKG_DIR}/usr/bin/llm-usage-indicator-settings"
 
+          cat > "${PKG_DIR}/usr/bin/llm-usage-indicator-tray" << 'WRAP'
+          #!/usr/bin/env bash
+          PYTHONPATH="/usr/lib" exec python3 -m llm_usage_indicator.tray "$@"
+          WRAP
+          chmod +x "${PKG_DIR}/usr/bin/llm-usage-indicator-tray"
+
           mkdir -p "${PKG_DIR}/usr/share/applications"
           cp "dist/${ARTIFACT}/gui/llm-usage-indicator-settings.desktop" \
              "${PKG_DIR}/usr/share/applications/"
+
+          # Tray autostart desktop file (installed per-user in postinst)
+          cp "dist/${ARTIFACT}/gui/llm-usage-indicator-tray.desktop" \
+             "${PKG_DIR}/usr/share/llm-usage-indicator/"
 
           # Systemd user service
           cp "dist/${ARTIFACT}/systemd/llm-usage-indicator.service" \
@@ -254,10 +266,28 @@ jobs:
               echo "[llm-usage-indicator] No active user session — service will start at next login."
           fi
 
+          # 5. Register XDG autostart for the tray indicator
+          AUTOSTART_DIR="$REAL_HOME/.config/autostart"
+          as_user mkdir -p "$AUTOSTART_DIR"
+          cp /usr/share/llm-usage-indicator/llm-usage-indicator-tray.desktop \
+             "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
+          chown "$REAL_USER" "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
+          echo "[llm-usage-indicator] Autostart entry installed (tray starts on next login)."
+
+          # 6. Start tray now if user has an active display session
+          USER_DISPLAY=$(as_user bash -c 'echo ${DISPLAY:-${WAYLAND_DISPLAY:-}}' 2>/dev/null || true)
+          if [ -n "$USER_DISPLAY" ]; then
+              as_user pkill -f "llm_usage_indicator.tray" 2>/dev/null || true
+              as_user bash -c 'nohup /usr/bin/llm-usage-indicator-tray >/dev/null 2>&1 &'
+              echo "[llm-usage-indicator] Tray indicator started."
+          else
+              echo "[llm-usage-indicator] No display session — tray will start at next login."
+          fi
+
           echo ""
           echo "[llm-usage-indicator] Installation complete!"
+          echo "  Usage is now shown in the top bar (🤖 C:\$xx.xx …)"
           echo "  Open settings: llm-usage-indicator-settings"
-          echo "  Add Waybar module: see /usr/share/llm-usage-indicator/waybar/config-example.json"
           POSTINST
           chmod 755 "${PKG_DIR}/DEBIAN/postinst"
 
@@ -280,6 +310,8 @@ jobs:
                   runuser -u "$REAL_USER" -- env HOME="$REAL_HOME" XDG_RUNTIME_DIR="/run/user/$(id -u "$REAL_USER")" "$@"
               }
               as_user systemctl --user disable --now llm-usage-indicator 2>/dev/null || true
+              as_user pkill -f "llm_usage_indicator.tray" 2>/dev/null || true
+              rm -f "$REAL_HOME/.config/autostart/llm-usage-indicator-tray.desktop"
           fi
           PRERM
           chmod 755 "${PKG_DIR}/DEBIAN/prerm"
@@ -296,8 +328,8 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: all
-          Depends: python3 (>= 3.10), python3-pip
-          Recommends: waybar, python3-gi, gir1.2-gtk-3.0
+          Depends: python3 (>= 3.10), python3-pip, python3-gi, gir1.2-gtk-3.0
+          Recommends: gir1.2-appindicator3-0.1, gnome-shell-extension-appindicator, waybar
           Installed-Size: ${INSTALLED_SIZE}
           Maintainer: llm-usage-indicator contributors
           Description: LLM usage indicator for Waybar

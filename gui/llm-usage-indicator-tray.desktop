@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=LLM Usage Indicator (tray)
+Comment=Show LLM usage in the GNOME status bar
+Exec=llm-usage-indicator-tray
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Utility;
+Keywords=llm;claude;gemini;openai;usage;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
