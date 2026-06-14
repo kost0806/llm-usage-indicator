@@ -1,0 +1,8 @@
+{
+    "custom/llm-monitor": {
+        "exec": "~/.config/waybar/scripts/llm-monitor.sh",
+        "return-type": "json",
+        "interval": 30,
+        "on-click": "notify-send 'LLM Credits' \"$(~/.config/waybar/scripts/llm-monitor.sh --detail)\""
+    }
+}

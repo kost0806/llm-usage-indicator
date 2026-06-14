@@ -1,0 +1,21 @@
+[general]
+poll_interval_credits = 300   # credit balance polling interval (seconds)
+poll_interval_usage   = 60    # usage polling interval (seconds)
+waybar_refresh        = 30    # waybar refresh signal interval (seconds)
+socket_path           = "/tmp/llm-monitor.sock"
+db_path               = "~/.local/share/llm-credit-monitor/data.db"
+
+[providers.claude]
+enabled    = true
+api_key    = "sk-ant-..."          # Anthropic API key
+budget_usd = 20.00                 # total credits (manual input)
+
+[providers.gemini]
+enabled    = true
+api_key    = "AIza..."             # Google AI API key
+budget_usd = 15.00
+
+[providers.openai]
+enabled    = true
+api_key    = "sk-..."              # OpenAI API key
+budget_usd = 10.00
