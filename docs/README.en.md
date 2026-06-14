@@ -68,7 +68,7 @@ ccusage reads conversation logs stored locally at `~/.claude/projects/**/*.jsonl
 
 ```bash
 VERSION=$(curl -s https://api.github.com/repos/kost0806/llm-usage-indicator/releases/latest \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'][1:])")
+  | grep -oP '"tag_name":\s*"v\K[^"]+')
 
 curl -LO "https://github.com/kost0806/llm-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.tar.gz"
 tar -xzf "llm-credit-monitor-${VERSION}.tar.gz"
@@ -80,7 +80,7 @@ bash install.sh
 
 ```bash
 VERSION=$(curl -s https://api.github.com/repos/kost0806/llm-usage-indicator/releases/latest \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'][1:])")
+  | grep -oP '"tag_name":\s*"v\K[^"]+')
 
 curl -LO "https://github.com/kost0806/llm-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.deb"
 sudo dpkg -i "llm-credit-monitor-${VERSION}.deb"

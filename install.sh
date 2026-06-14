@@ -16,9 +16,9 @@ if [ -z "$PYTHON" ]; then
     error "python3 not found. Please install Python 3.10 or newer."
 fi
 
-PY_VER=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-PY_MAJOR=$("$PYTHON" -c "import sys; print(sys.version_info.major)")
-PY_MINOR=$("$PYTHON" -c "import sys; print(sys.version_info.minor)")
+PY_VER=$("$PYTHON" --version 2>&1 | awk '{print $2}')
+PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
+PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
 
 if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
     error "Python 3.10+ required, found $PY_VER. Please upgrade Python."
