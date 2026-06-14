@@ -62,7 +62,7 @@ else
 fi
 
 # ── Step 6: Copy daemon library ───────────────────────────────────────────────
-LIB_DIR="$HOME/.local/lib/llm-credit-monitor"
+LIB_DIR="$HOME/.local/lib/llm_credit_monitor"
 info "Installing daemon to: $LIB_DIR"
 mkdir -p "$LIB_DIR"
 cp -r "$SCRIPT_DIR/daemon/"* "$LIB_DIR/"
@@ -75,12 +75,7 @@ WRAPPER="$BIN_DIR/llm-credit-monitor"
 
 cat > "$WRAPPER" << WRAPPER_EOF
 #!/usr/bin/env bash
-PYTHONPATH="\$HOME/.local/lib" exec python3 -c "
-import sys
-sys.path.insert(0, '\$HOME/.local/lib/llm-credit-monitor')
-from main import main
-main()
-" "\$@"
+PYTHONPATH="\$HOME/.local/lib" exec python3 -m llm_credit_monitor.main "\$@"
 WRAPPER_EOF
 
 chmod +x "$WRAPPER"
