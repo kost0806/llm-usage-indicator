@@ -1,6 +1,6 @@
 """
 SQLite persistence layer for llm-credit-monitor.
-Stores usage snapshots and TPS events using aiosqlite for non-blocking I/O.
+Stores usage snapshots using aiosqlite for non-blocking I/O.
 """
 
 import time
@@ -14,15 +14,6 @@ CREATE TABLE IF NOT EXISTS snapshots (
     provider    TEXT NOT NULL,
     spent_total REAL NOT NULL,
     spent_today REAL NOT NULL,
-    last_tps    REAL NOT NULL DEFAULT 0,
-    recorded_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS tps_events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    provider    TEXT NOT NULL,
-    tps         REAL NOT NULL,
-    token_count INTEGER NOT NULL,
     recorded_at INTEGER NOT NULL
 );
 """
@@ -61,14 +52,13 @@ class Store:
         provider: str,
         spent_total: float,
         spent_today: float,
-        last_tps: float,
     ) -> None:
         assert self._db is not None
         now = int(time.time())
         await self._db.execute(
-            """INSERT INTO snapshots (provider, spent_total, spent_today, last_tps, recorded_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (provider, spent_total, spent_today, last_tps, now),
+            """INSERT INTO snapshots (provider, spent_total, spent_today, recorded_at)
+               VALUES (?, ?, ?, ?)""",
+            (provider, spent_total, spent_today, now),
         )
         await self._db.commit()
 
@@ -77,7 +67,6 @@ class Store:
         assert self._db is not None
         midnight = _today_midnight_ts()
 
-        # First snapshot at or after midnight
         async with self._db.execute(
             """SELECT spent_total FROM snapshots
                WHERE provider = ? AND recorded_at >= ?
@@ -86,7 +75,6 @@ class Store:
         ) as cur:
             first_row = await cur.fetchone()
 
-        # Latest snapshot
         async with self._db.execute(
             """SELECT spent_total FROM snapshots
                WHERE provider = ?
@@ -100,33 +88,6 @@ class Store:
 
         delta = float(last_row["spent_total"]) - float(first_row["spent_total"])
         return max(0.0, delta)
-
-    async def record_tps_event(
-        self, provider: str, tps: float, token_count: int
-    ) -> None:
-        assert self._db is not None
-        now = int(time.time())
-        await self._db.execute(
-            """INSERT INTO tps_events (provider, tps, token_count, recorded_at)
-               VALUES (?, ?, ?, ?)""",
-            (provider, tps, token_count, now),
-        )
-        await self._db.commit()
-
-    async def get_last_tps(self, provider: str) -> float:
-        """Return average TPS from the most recent 5 events."""
-        assert self._db is not None
-        async with self._db.execute(
-            """SELECT tps FROM tps_events
-               WHERE provider = ?
-               ORDER BY recorded_at DESC LIMIT 5""",
-            (provider,),
-        ) as cur:
-            rows = await cur.fetchall()
-
-        if not rows:
-            return 0.0
-        return sum(float(r["tps"]) for r in rows) / len(rows)
 
     async def get_latest_snapshot(self, provider: str) -> dict | None:
         """Return the most recent snapshot for a provider."""
@@ -155,13 +116,10 @@ if __name__ == "__main__":
     async def _test() -> None:
         store = Store(Path("/tmp/test-llm-monitor.db"))
         await store.open()
-        await store.save_snapshot("claude", 5.0, 0.5, 42.0)
-        await store.record_tps_event("claude", 42.0, 820)
+        await store.save_snapshot("claude", 5.0, 0.5)
         today = await store.get_today_spent("claude")
-        tps = await store.get_last_tps("claude")
         snap = await store.get_latest_snapshot("claude")
         print(f"Today spent: ${today:.4f}")
-        print(f"Last TPS: {tps:.1f}")
         print(f"Latest snapshot: {snap}")
         await store.close()
 

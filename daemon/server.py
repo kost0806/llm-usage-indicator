@@ -7,9 +7,6 @@ Protocol: newline-delimited JSON — one request line, one response line.
 Commands:
   {"cmd": "status"}
     → returns all provider statuses + aggregate totals
-
-  {"cmd": "push_tps", "provider": "claude", "tps": 45.2, "tokens": 820}
-    → records a TPS event in SQLite, returns {"ok": true}
 """
 
 import asyncio
@@ -25,7 +22,6 @@ from .providers.base import ProviderStatus
 
 logger = logging.getLogger(__name__)
 
-# Type alias for status getter callable
 StatusGetter = Callable[[], Awaitable[list[ProviderStatus]]]
 
 
@@ -42,7 +38,6 @@ class SocketServer:
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
-        # Remove stale socket file if it exists.
         if os.path.exists(self._socket_path):
             os.unlink(self._socket_path)
 
@@ -90,10 +85,7 @@ class SocketServer:
         cmd = request.get("cmd")
         if cmd == "status":
             return await self._handle_status()
-        elif cmd == "push_tps":
-            return await self._handle_push_tps(request)
-        else:
-            return {"error": f"unknown command: {cmd}"}
+        return {"error": f"unknown command: {cmd}"}
 
     async def _handle_status(self) -> dict[str, Any]:
         statuses = await self._get_cached_statuses()
@@ -109,7 +101,6 @@ class SocketServer:
                 "spent_today": round(s.spent_today, 4),
                 "remaining": round(s.remaining, 2),
                 "remaining_pct": round(s.remaining_pct, 1),
-                "last_tps": round(s.last_tps, 1),
                 "updated_at": int(s.updated_at),
             })
             total_remaining += s.remaining
@@ -122,33 +113,19 @@ class SocketServer:
             "server_time": int(time.time()),
         }
 
-    async def _handle_push_tps(self, request: dict) -> dict:
-        provider = request.get("provider", "")
-        tps = float(request.get("tps", 0.0))
-        tokens = int(request.get("tokens", 0))
-
-        if provider not in ("claude", "gemini", "openai"):
-            return {"error": f"unknown provider: {provider}"}
-
-        await self._store.record_tps_event(provider, tps, tokens)
-        logger.debug("TPS push: provider=%s tps=%.1f tokens=%d", provider, tps, tokens)
-        return {"ok": True}
-
 
 if __name__ == "__main__":
     import asyncio
     from pathlib import Path
-    from .store import Store
-    from .providers.base import ProviderStatus
 
     async def _test() -> None:
         store = Store(Path("/tmp/test-server.db"))
         await store.open()
 
         dummy_statuses: list[ProviderStatus] = [
-            ProviderStatus("Claude", 20.0, 7.6, 0.23, 42.3, time.time()),
-            ProviderStatus("Gemini", 15.0, 6.9, 0.05, 38.0, time.time()),
-            ProviderStatus("OpenAI", 10.0, 5.8, 1.10, 31.0, time.time()),
+            ProviderStatus("Claude", 20.0, 7.6, 0.23, time.time()),
+            ProviderStatus("Gemini", 15.0, 6.9, 0.05, time.time()),
+            ProviderStatus("OpenAI", 10.0, 5.8, 1.10, time.time()),
         ]
 
         async def get_statuses() -> list[ProviderStatus]:
@@ -157,7 +134,7 @@ if __name__ == "__main__":
         server = SocketServer("/tmp/test-llm-monitor.sock", store, get_statuses)
         await server.start()
         print("Server started. Test with:")
-        print("  echo '{\"cmd\":\"status\"}' | socat - UNIX-CONNECT:/tmp/test-llm-monitor.sock")
+        print("  echo '{\"cmd\":\"status\"}' | python3 -c \"import socket,sys; ...")
         await asyncio.sleep(30)
         await server.stop()
         await store.close()

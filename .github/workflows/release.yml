@@ -210,7 +210,7 @@ jobs:
           Recommends: waybar
           Installed-Size: ${INSTALLED_SIZE}
           Maintainer: llm-credit-monitor contributors
-          Description: LLM credit and TPS monitor for Waybar
+          Description: LLM credit monitor for Waybar
            Displays Claude/Gemini/OpenAI credit balance, daily usage,
            and tokens-per-second in Waybar status bar on Ubuntu 22.04+.
           CONTROL
@@ -259,7 +259,7 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE
           python3 -c "
-          import asyncio, sys, time
+          import asyncio, sys
           sys.path.insert(0, '.')
           from daemon.store import Store
           from pathlib import Path
@@ -267,11 +267,8 @@ jobs:
           async def run():
               store = Store(Path('/tmp/ci-test.db'))
               await store.open()
-              await store.save_snapshot('claude', 5.0, 0.5, 42.0)
-              await store.record_tps_event('claude', 42.0, 820)
-              tps = await store.get_last_tps('claude')
+              await store.save_snapshot('claude', 5.0, 0.5)
               snap = await store.get_latest_snapshot('claude')
-              assert abs(tps - 42.0) < 0.1, f'TPS mismatch: {tps}'
               assert snap is not None, 'Snapshot not found'
               await store.close()
               print('Store test PASSED')
@@ -279,7 +276,7 @@ jobs:
           asyncio.run(run())
           "
 
-      - name: Test socket server (status + push_tps)
+      - name: Test socket server (status command)
         run: |
           cd $GITHUB_WORKSPACE
           python3 -c "
@@ -294,16 +291,15 @@ jobs:
               store = Store(Path('/tmp/ci-server.db'))
               await store.open()
               statuses = [
-                  ProviderStatus('Claude', 20.0, 7.6, 0.23, 42.3, time.time()),
-                  ProviderStatus('Gemini', 15.0, 6.9, 0.05, 38.0, time.time()),
-                  ProviderStatus('OpenAI', 10.0, 5.8, 1.10, 31.0, time.time()),
+                  ProviderStatus('Claude', 20.0, 7.6, 0.23, time.time()),
+                  ProviderStatus('Gemini', 15.0, 6.9, 0.05, time.time()),
+                  ProviderStatus('OpenAI', 10.0, 5.8, 1.10, time.time()),
               ]
               async def get_statuses():
                   return statuses
               server = SocketServer('/tmp/ci-test.sock', store, get_statuses)
               await server.start()
 
-              # status command
               r, w = await asyncio.open_unix_connection('/tmp/ci-test.sock')
               w.write(b'{\"cmd\":\"status\"}\n')
               await w.drain()
@@ -311,16 +307,8 @@ jobs:
               w.close(); await w.wait_closed()
               assert len(data['providers']) == 3
               assert abs(data['total_remaining'] - 24.70) < 0.01
+              assert 'last_tps' not in data['providers'][0], 'last_tps should be removed'
               print(f'status: total_remaining=\${data[\"total_remaining\"]:.2f} OK')
-
-              # push_tps command
-              r, w = await asyncio.open_unix_connection('/tmp/ci-test.sock')
-              w.write(b'{\"cmd\":\"push_tps\",\"provider\":\"claude\",\"tps\":55.5,\"tokens\":1000}\n')
-              await w.drain()
-              resp = json.loads(await r.readline())
-              w.close(); await w.wait_closed()
-              assert resp.get('ok') == True
-              print('push_tps: OK')
 
               await server.stop()
               await store.close()
@@ -357,7 +345,7 @@ jobs:
           async def run():
               store = Store(Path('/tmp/ci-waybar.db'))
               await store.open()
-              statuses = [ProviderStatus('Claude', 20.0, 7.6, 0.23, 42.3, time.time())]
+              statuses = [ProviderStatus('Claude', 20.0, 7.6, 0.23, time.time())]
               async def get_statuses():
                   return statuses
               server = SocketServer('/tmp/llm-monitor.sock', store, get_statuses)
@@ -415,7 +403,7 @@ jobs:
           body: |
             ## llm-credit-monitor v${{ needs.build.outputs.version }}
 
-            Waybar용 LLM 크레딧·TPS 모니터 데몬 (Claude / Gemini / OpenAI)
+            Waybar용 LLM 크레딧 모니터 데몬 (Claude / Gemini / OpenAI)
 
             ### 설치 방법
 

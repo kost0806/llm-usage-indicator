@@ -12,11 +12,6 @@ Usage tracking (unofficial, may change):
   If this returns 404/403, we fall back to local SQLite-only tracking.
   Ref: https://docs.anthropic.com/en/api/messages (official messages API)
 
-TPS:
-  Cannot be measured externally without intercepting actual requests.
-  The daemon supports external push via socket `push_tps` command.
-  Cached last value is returned from SQLite.
-
 Token pricing (Claude Sonnet 3.5 as baseline, update as needed):
   Input:  $3.00 per 1M tokens
   Output: $15.00 per 1M tokens
@@ -118,7 +113,6 @@ class ClaudeProvider(AbstractProvider):
             spent_total = snap["spent_total"] if snap else 0.0
 
         today_spent = await self._store.get_today_spent("claude")
-        last_tps = await self._store.get_last_tps("claude")
 
         now = time.time()
         status = ProviderStatus(
@@ -126,11 +120,10 @@ class ClaudeProvider(AbstractProvider):
             budget_usd=self._budget_usd,
             spent_total=spent_total,
             spent_today=today_spent,
-            last_tps=last_tps,
             updated_at=now,
         )
 
-        await self._store.save_snapshot("claude", spent_total, today_spent, last_tps)
+        await self._store.save_snapshot("claude", spent_total, today_spent)
         self._last_status = status
         return status
 

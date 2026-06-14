@@ -90,8 +90,8 @@ class Daemon:
         try:
             status = await provider.fetch_status()
             logger.debug(
-                "%s: remaining=$%.2f today=$%.4f tps=%.1f",
-                status.name, status.remaining, status.spent_today, status.last_tps,
+                "%s: remaining=$%.2f today=$%.4f",
+                status.name, status.remaining, status.spent_today,
             )
             return status
         except Exception as exc:

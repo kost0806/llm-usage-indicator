@@ -11,10 +11,6 @@ Daily usage:
   GET https://api.openai.com/v1/usage?date=YYYY-MM-DD
   Docs: https://platform.openai.com/docs/api-reference/usage
   NOTE: This is an undocumented/legacy endpoint; may return 404 for new orgs.
-
-TPS:
-  Estimated from last completion_tokens / latency stored in SQLite.
-  External push via socket `push_tps` command is also supported.
 """
 
 import time
@@ -124,17 +120,12 @@ class OpenAIProvider(AbstractProvider):
 
         available, spent_total = await self._fetch_credit_grants()
         today_spent = await self._fetch_today_usage()
-        last_tps = await self._store.get_last_tps("openai")
 
-        # If credit grants API worked, use its values directly.
-        # Otherwise, use budget_usd - local cumulative tracking.
         if spent_total == 0.0 and available == 0.0:
-            # Fallback: use budget minus latest snapshot spent_total from DB.
             snap = await self._store.get_latest_snapshot("openai")
             spent_total = snap["spent_total"] if snap else 0.0
             budget = self._budget_usd
         else:
-            # API returned real data; treat total_granted as budget.
             total_granted = available + spent_total
             budget = total_granted if total_granted > 0 else self._budget_usd
 
@@ -144,11 +135,10 @@ class OpenAIProvider(AbstractProvider):
             budget_usd=budget,
             spent_total=spent_total,
             spent_today=today_spent,
-            last_tps=last_tps,
             updated_at=now,
         )
 
-        await self._store.save_snapshot("openai", spent_total, today_spent, last_tps)
+        await self._store.save_snapshot("openai", spent_total, today_spent)
         self._last_status = status
         return status
 

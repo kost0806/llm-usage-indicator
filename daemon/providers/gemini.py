@@ -9,14 +9,9 @@ Credit balance:
 Usage tracking:
   No official usage reporting API for Google AI Studio free/paid tiers.
   Ref: https://ai.google.dev/gemini-api/docs/models
-  Workaround: Accept external TPS push via socket; accumulate locally.
+  Workaround: accumulate locally in SQLite.
   If Google Cloud Vertex AI is used instead, billing API is available:
   Ref: https://cloud.google.com/billing/docs/reference/rest
-
-TPS:
-  Measured from usageMetadata in Gemini API responses:
-  { "promptTokenCount": N, "candidatesTokenCount": M, "totalTokenCount": T }
-  External push via socket `push_tps` command is the primary mechanism.
 
 Token pricing (Gemini 1.5 Pro baseline, update as needed):
   Input:  $3.50 per 1M tokens  (>128k context)
@@ -112,7 +107,6 @@ class GeminiProvider(AbstractProvider):
             spent_total = snap["spent_total"] if snap else 0.0
 
         today_spent = await self._store.get_today_spent("gemini")
-        last_tps = await self._store.get_last_tps("gemini")
 
         now = time.time()
         status = ProviderStatus(
@@ -120,11 +114,10 @@ class GeminiProvider(AbstractProvider):
             budget_usd=self._budget_usd,
             spent_total=spent_total,
             spent_today=today_spent,
-            last_tps=last_tps,
             updated_at=now,
         )
 
-        await self._store.save_snapshot("gemini", spent_total, today_spent, last_tps)
+        await self._store.save_snapshot("gemini", spent_total, today_spent)
         self._last_status = status
         return status
 

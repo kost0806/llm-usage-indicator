@@ -12,7 +12,6 @@ class ProviderStatus:
     budget_usd: float   # configured total credits
     spent_total: float  # cumulative usage (from API)
     spent_today: float  # today's usage
-    last_tps: float     # last request TPS (approximate)
     updated_at: float   # unix timestamp
 
     @property
