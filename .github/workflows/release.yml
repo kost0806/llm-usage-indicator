@@ -11,6 +11,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # Node.js 24 will become the default on 2026-06-16; opt in now to avoid
+  # forced migration breaking the pipeline mid-run.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ── 1. Lint & syntax check ───────────────────────────────────────────────
   lint:
@@ -327,19 +332,21 @@ jobs:
       - name: Test waybar script (no daemon → error JSON)
         run: |
           rm -f /tmp/llm-monitor.sock
-          output=$(bash waybar/module.sh)
-          echo "Output: $output"
-          python3 -c "
-          import json, sys
-          data = json.loads('$output')
+          bash waybar/module.sh > /tmp/waybar-out.json
+          echo "Output: $(cat /tmp/waybar-out.json)"
+          # Read from file directly — avoids bash variable interpolation breaking JSON
+          python3 << 'PYEOF'
+          import json
+          with open('/tmp/waybar-out.json') as f:
+              data = json.load(f)
           assert data.get('class') == 'llm-monitor-error', f'Expected error class, got: {data}'
           print('Waybar fallback test PASSED')
-          "
+          PYEOF
 
       - name: Test waybar script (with daemon → valid JSON)
         run: |
-          cd $GITHUB_WORKSPACE
-          python3 -c "
+          # Start a background daemon stub using a temp script file
+          cat > /tmp/ci-daemon-stub.py << 'PYDAEMON'
           import asyncio, sys, time
           sys.path.insert(0, '.')
           from daemon.store import Store
@@ -350,29 +357,33 @@ jobs:
           async def run():
               store = Store(Path('/tmp/ci-waybar.db'))
               await store.open()
-              statuses = [
-                  ProviderStatus('Claude', 20.0, 7.6, 0.23, 42.3, time.time()),
-              ]
+              statuses = [ProviderStatus('Claude', 20.0, 7.6, 0.23, 42.3, time.time())]
               async def get_statuses():
                   return statuses
               server = SocketServer('/tmp/llm-monitor.sock', store, get_statuses)
               await server.start()
-              await asyncio.sleep(5)
+              await asyncio.sleep(10)
               await server.stop()
               await store.close()
           asyncio.run(run())
-          " &
+          PYDAEMON
+
+          python3 /tmp/ci-daemon-stub.py &
           BGPID=$!
           sleep 1
-          output=$(bash waybar/module.sh)
-          echo "Output: $output"
-          python3 -c "
+
+          bash waybar/module.sh > /tmp/waybar-live.json
+          echo "Output: $(cat /tmp/waybar-live.json)"
+          # Read from file directly — tooltip contains real newlines which break
+          # bash variable interpolation inside Python string literals
+          python3 << 'PYEOF'
           import json
-          data = json.loads('$output'.replace('\"', '\"'))
+          with open('/tmp/waybar-live.json') as f:
+              data = json.load(f)
           assert data.get('class') == 'llm-monitor', f'Expected llm-monitor class, got: {data}'
           assert 'C:' in data.get('text', ''), f'Expected C: in text, got: {data}'
           print('Waybar live test PASSED')
-          "
+          PYEOF
           wait $BGPID
 
   # ── 4. GitHub Release (tags only) ─────────────────────────────────────────
