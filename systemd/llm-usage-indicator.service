@@ -1,11 +1,11 @@
 [Unit]
-Description=LLM Credit Monitor Daemon
+Description=LLM Usage Indicator Daemon
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/llm-credit-monitor
+ExecStart=%h/.local/bin/llm-usage-indicator
 Restart=on-failure
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

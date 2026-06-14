@@ -1,11 +1,11 @@
 """
-Main asyncio entry point for llm-credit-monitor daemon.
+Main asyncio entry point for llm-usage-indicator daemon.
 
 Configuration search order:
-  1. ~/.config/llm-credit-monitor/config.toml
+  1. ~/.config/llm-usage-indicator/config.toml
   2. ./config.toml (current directory)
 
-Logs: ~/.local/share/llm-credit-monitor/monitor.log (rotating, 1MB x 3 files)
+Logs: ~/.local/share/llm-usage-indicator/monitor.log (rotating, 1MB x 3 files)
 """
 
 import asyncio
@@ -74,7 +74,7 @@ class Daemon:
     async def run(self) -> None:
         log_dir = self._cfg.db_path_expanded.parent
         _setup_logging(log_dir)
-        logger.info("llm-credit-monitor daemon starting")
+        logger.info("llm-usage-indicator daemon starting")
 
         await self._store.open()
 
@@ -104,7 +104,7 @@ class Daemon:
             await self._shutdown()
 
     async def _shutdown(self) -> None:
-        logger.info("Shutting down llm-credit-monitor")
+        logger.info("Shutting down llm-usage-indicator")
         if self._server:
             await self._server.stop()
         await self._store.close()

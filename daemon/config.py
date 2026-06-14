@@ -1,6 +1,6 @@
 """
-Configuration loader for llm-credit-monitor.
-Reads TOML config from ~/.config/llm-credit-monitor/config.toml,
+Configuration loader for llm-usage-indicator.
+Reads TOML config from ~/.config/llm-usage-indicator/config.toml,
 falling back to ./config.toml in the current directory.
 """
 
@@ -28,7 +28,7 @@ _BUDGET_KEY_MAP: dict[str, str] = {
 class GeneralConfig:
     poll_interval: int = 60
     socket_path: str = "/tmp/llm-monitor.sock"
-    db_path: str = "~/.local/share/llm-credit-monitor/data.db"
+    db_path: str = "~/.local/share/llm-usage-indicator/data.db"
     ccusage_cmd: str = "npx ccusage@latest"
 
 
@@ -47,7 +47,7 @@ class Config:
 
 
 def _resolve_config_path() -> Path:
-    user_config = Path.home() / ".config" / "llm-credit-monitor" / "config.toml"
+    user_config = Path.home() / ".config" / "llm-usage-indicator" / "config.toml"
     if user_config.exists():
         return user_config
     local_config = Path("config.toml")
@@ -69,7 +69,7 @@ def load_config() -> Config:
     general = GeneralConfig(
         poll_interval=int(general_raw.get("poll_interval", 60)),
         socket_path=general_raw.get("socket_path", "/tmp/llm-monitor.sock"),
-        db_path=general_raw.get("db_path", "~/.local/share/llm-credit-monitor/data.db"),
+        db_path=general_raw.get("db_path", "~/.local/share/llm-usage-indicator/data.db"),
         ccusage_cmd=general_raw.get("ccusage_cmd", "npx ccusage@latest"),
     )
 

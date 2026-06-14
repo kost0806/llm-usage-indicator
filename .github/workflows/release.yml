@@ -92,7 +92,7 @@ jobs:
             # Use short commit hash for non-tag builds
             VERSION="0.0.0-dev.$(git rev-parse --short HEAD)"
           fi
-          ARTIFACT_NAME="llm-credit-monitor-${VERSION}"
+          ARTIFACT_NAME="llm-usage-indicator-${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
           echo "Building version: ${VERSION}"
@@ -121,7 +121,7 @@ jobs:
           chmod +x "dist/${ARTIFACT}/waybar/module.sh"
 
           # Embed version into install.sh
-          sed -i "s|^# install.sh.*|# install.sh — llm-credit-monitor v${VERSION}|" \
+          sed -i "s|^# install.sh.*|# install.sh — llm-usage-indicator v${VERSION}|" \
             "dist/${ARTIFACT}/install.sh" || true
 
           echo "Contents of dist/${ARTIFACT}:"
@@ -143,47 +143,47 @@ jobs:
 
           # Package structure
           mkdir -p "${PKG_DIR}/DEBIAN"
-          mkdir -p "${PKG_DIR}/usr/lib/llm_credit_monitor"
+          mkdir -p "${PKG_DIR}/usr/lib/llm_usage_indicator"
           mkdir -p "${PKG_DIR}/usr/bin"
-          mkdir -p "${PKG_DIR}/usr/share/doc/llm-credit-monitor"
+          mkdir -p "${PKG_DIR}/usr/share/doc/llm-usage-indicator"
           mkdir -p "${PKG_DIR}/usr/lib/systemd/user"
-          mkdir -p "${PKG_DIR}/etc/llm-credit-monitor"
+          mkdir -p "${PKG_DIR}/etc/llm-usage-indicator"
 
           # Daemon library
-          cp -r "dist/${ARTIFACT}/daemon/"* "${PKG_DIR}/usr/lib/llm_credit_monitor/"
+          cp -r "dist/${ARTIFACT}/daemon/"* "${PKG_DIR}/usr/lib/llm_usage_indicator/"
 
           # Wrapper binary
-          cat > "${PKG_DIR}/usr/bin/llm-credit-monitor" << 'WRAP'
+          cat > "${PKG_DIR}/usr/bin/llm-usage-indicator" << 'WRAP'
           #!/usr/bin/env bash
-          PYTHONPATH="/usr/lib" exec python3 -m llm_credit_monitor.main "$@"
+          PYTHONPATH="/usr/lib" exec python3 -m llm_usage_indicator.main "$@"
           WRAP
-          chmod +x "${PKG_DIR}/usr/bin/llm-credit-monitor"
+          chmod +x "${PKG_DIR}/usr/bin/llm-usage-indicator"
 
           # Systemd user service
-          cp "dist/${ARTIFACT}/systemd/llm-credit-monitor.service" \
+          cp "dist/${ARTIFACT}/systemd/llm-usage-indicator.service" \
              "${PKG_DIR}/usr/lib/systemd/user/"
 
           # Example config
           cp "dist/${ARTIFACT}/config.example.toml" \
-             "${PKG_DIR}/etc/llm-credit-monitor/"
+             "${PKG_DIR}/etc/llm-usage-indicator/"
 
           # Waybar script
-          mkdir -p "${PKG_DIR}/usr/share/llm-credit-monitor/waybar"
+          mkdir -p "${PKG_DIR}/usr/share/llm-usage-indicator/waybar"
           cp "dist/${ARTIFACT}/waybar/"* \
-             "${PKG_DIR}/usr/share/llm-credit-monitor/waybar/"
+             "${PKG_DIR}/usr/share/llm-usage-indicator/waybar/"
 
           # Docs
-          cp "dist/${ARTIFACT}/README.md"        "${PKG_DIR}/usr/share/doc/llm-credit-monitor/" 2>/dev/null || true
-          cp "dist/${ARTIFACT}/docs/README.en.md" "${PKG_DIR}/usr/share/doc/llm-credit-monitor/" 2>/dev/null || true
-          cp "dist/${ARTIFACT}/requirements.txt"  "${PKG_DIR}/usr/share/doc/llm-credit-monitor/"
+          cp "dist/${ARTIFACT}/README.md"        "${PKG_DIR}/usr/share/doc/llm-usage-indicator/" 2>/dev/null || true
+          cp "dist/${ARTIFACT}/docs/README.en.md" "${PKG_DIR}/usr/share/doc/llm-usage-indicator/" 2>/dev/null || true
+          cp "dist/${ARTIFACT}/requirements.txt"  "${PKG_DIR}/usr/share/doc/llm-usage-indicator/"
 
           # Postinst script
           cat > "${PKG_DIR}/DEBIAN/postinst" << 'POSTINST'
           #!/bin/bash
           set -e
-          echo "llm-credit-monitor installed."
-          echo "To configure: cp /etc/llm-credit-monitor/config.example.toml ~/.config/llm-credit-monitor/config.toml"
-          echo "Then edit your API keys and run: systemctl --user enable --now llm-credit-monitor"
+          echo "llm-usage-indicator installed."
+          echo "To configure: cp /etc/llm-usage-indicator/config.example.toml ~/.config/llm-usage-indicator/config.toml"
+          echo "Then edit your API keys and run: systemctl --user enable --now llm-usage-indicator"
           POSTINST
           chmod 755 "${PKG_DIR}/DEBIAN/postinst"
 
@@ -194,7 +194,7 @@ jobs:
           # Note: version must be a valid Debian version (strip 'dev.' prefix for deb)
           DEB_VERSION=$(echo "$VERSION" | sed 's/-dev\./~dev./g')
           cat > "${PKG_DIR}/DEBIAN/control" << CONTROL
-          Package: llm-credit-monitor
+          Package: llm-usage-indicator
           Version: ${DEB_VERSION}
           Section: utils
           Priority: optional
@@ -202,10 +202,10 @@ jobs:
           Depends: python3 (>= 3.10), python3-pip
           Recommends: waybar
           Installed-Size: ${INSTALLED_SIZE}
-          Maintainer: llm-credit-monitor contributors
-          Description: LLM credit monitor for Waybar
-           Displays Claude/Gemini/OpenAI credit balance, daily usage,
-           and tokens-per-second in Waybar status bar on Ubuntu 22.04+.
+          Maintainer: llm-usage-indicator contributors
+          Description: LLM usage indicator for Waybar
+           Displays Claude/Gemini/OpenAI usage, daily spend,
+           and remaining budget in Waybar status bar on Ubuntu 22.04+.
           CONTROL
 
           # Build deb
@@ -463,9 +463,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "llm-credit-monitor v${{ needs.build.outputs.version }}"
+          name: "llm-usage-indicator v${{ needs.build.outputs.version }}"
           body: |
-            ## llm-credit-monitor v${{ needs.build.outputs.version }}
+            ## llm-usage-indicator v${{ needs.build.outputs.version }}
 
             Waybar용 LLM 크레딧 모니터 데몬 (Claude / Gemini / OpenAI)
 
@@ -473,14 +473,14 @@ jobs:
 
             **tarball (범용):**
             ```bash
-            tar -xzf llm-credit-monitor-${{ needs.build.outputs.version }}.tar.gz
-            cd llm-credit-monitor-${{ needs.build.outputs.version }}
+            tar -xzf llm-usage-indicator-${{ needs.build.outputs.version }}.tar.gz
+            cd llm-usage-indicator-${{ needs.build.outputs.version }}
             bash install.sh
             ```
 
             **Debian/Ubuntu (.deb):**
             ```bash
-            sudo dpkg -i llm-credit-monitor-${{ needs.build.outputs.version }}.deb
+            sudo dpkg -i llm-usage-indicator-${{ needs.build.outputs.version }}.deb
             pip install aiohttp aiosqlite --user
             ```
 
@@ -493,8 +493,8 @@ jobs:
             ### Checksums
             Verify downloads with the accompanying `.sha256` files:
             ```bash
-            sha256sum -c llm-credit-monitor-${{ needs.build.outputs.version }}.tar.gz.sha256
-            sha256sum -c llm-credit-monitor-${{ needs.build.outputs.version }}.deb.sha256
+            sha256sum -c llm-usage-indicator-${{ needs.build.outputs.version }}.tar.gz.sha256
+            sha256sum -c llm-usage-indicator-${{ needs.build.outputs.version }}.deb.sha256
             ```
           files: |
             dist/*.tar.gz

@@ -1,7 +1,7 @@
 [general]
 poll_interval = 60                          # polling interval (seconds)
 socket_path   = "/tmp/llm-monitor.sock"
-db_path       = "~/.local/share/llm-credit-monitor/data.db"
+db_path       = "~/.local/share/llm-usage-indicator/data.db"
 ccusage_cmd   = "npx ccusage@latest"        # ccusage CLI command
 
 # Monthly credit budgets per provider (USD).
