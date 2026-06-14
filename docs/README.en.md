@@ -67,10 +67,10 @@ ccusage reads conversation logs stored locally at `~/.claude/projects/**/*.jsonl
 ### From release tarball (recommended)
 
 ```bash
-VERSION=$(curl -s https://api.github.com/repos/kost0806/ca-usage-indicator/releases/latest \
+VERSION=$(curl -s https://api.github.com/repos/kost0806/llm-usage-indicator/releases/latest \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'][1:])")
 
-curl -LO "https://github.com/kost0806/ca-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.tar.gz"
+curl -LO "https://github.com/kost0806/llm-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.tar.gz"
 tar -xzf "llm-credit-monitor-${VERSION}.tar.gz"
 cd "llm-credit-monitor-${VERSION}"
 bash install.sh
@@ -79,10 +79,10 @@ bash install.sh
 ### Debian package (.deb)
 
 ```bash
-VERSION=$(curl -s https://api.github.com/repos/kost0806/ca-usage-indicator/releases/latest \
+VERSION=$(curl -s https://api.github.com/repos/kost0806/llm-usage-indicator/releases/latest \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'][1:])")
 
-curl -LO "https://github.com/kost0806/ca-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.deb"
+curl -LO "https://github.com/kost0806/llm-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.deb"
 sudo dpkg -i "llm-credit-monitor-${VERSION}.deb"
 pip install aiosqlite --user
 ```
@@ -90,8 +90,8 @@ pip install aiosqlite --user
 ### From source
 
 ```bash
-git clone https://github.com/kost0806/ca-usage-indicator.git
-cd ca-usage-indicator
+git clone https://github.com/kost0806/llm-usage-indicator.git
+cd llm-usage-indicator
 bash install.sh
 ```
 
