@@ -379,7 +379,7 @@ jobs:
           results = _parse_file(Path(fname))
           os.unlink(fname)
           assert len(results) == 2, f'Expected 2 results, got {len(results)}: {results}'
-          dates = [r[0] for r in results]
+          dates = [r[1] for r in results]
           assert '2026-06-01' in dates
           assert today in dates
           print(f'JSONL parsing: {len(results)} entries parsed OK')
