@@ -1,6 +1,6 @@
 """
-Unix domain socket JSON server for llm-credit-monitor.
-Listens on /tmp/llm-monitor.sock (configurable) and serves provider status.
+TCP JSON server for llm-usage-indicator.
+Listens on 127.0.0.1:<port> (default 37891) and serves provider status.
 
 Protocol: newline-delimited JSON — one request line, one response line.
 
@@ -12,8 +12,6 @@ Commands:
 import asyncio
 import json
 import logging
-import os
-import stat
 import time
 from typing import Any, Callable, Awaitable
 
@@ -28,32 +26,27 @@ StatusGetter = Callable[[], Awaitable[list[ProviderStatus]]]
 class SocketServer:
     def __init__(
         self,
-        socket_path: str,
+        host: str,
+        port: int,
         store: Store,
         get_cached_statuses: StatusGetter,
     ) -> None:
-        self._socket_path = socket_path
+        self._host = host
+        self._port = port
         self._store = store
         self._get_cached_statuses = get_cached_statuses
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
-        if os.path.exists(self._socket_path):
-            os.unlink(self._socket_path)
-
-        self._server = await asyncio.start_unix_server(
-            self._handle_client, path=self._socket_path
+        self._server = await asyncio.start_server(
+            self._handle_client, host=self._host, port=self._port
         )
-        # Restrict socket to owner only (security: 600).
-        os.chmod(self._socket_path, stat.S_IRUSR | stat.S_IWUSR)
-        logger.info("Socket server listening on %s", self._socket_path)
+        logger.info("TCP server listening on %s:%d", self._host, self._port)
 
     async def stop(self) -> None:
         if self._server:
             self._server.close()
             await self._server.wait_closed()
-        if os.path.exists(self._socket_path):
-            os.unlink(self._socket_path)
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -112,31 +105,3 @@ class SocketServer:
             "total_spent_today": round(total_spent_today, 4),
             "server_time": int(time.time()),
         }
-
-
-if __name__ == "__main__":
-    import asyncio
-    from pathlib import Path
-
-    async def _test() -> None:
-        store = Store(Path("/tmp/test-server.db"))
-        await store.open()
-
-        dummy_statuses: list[ProviderStatus] = [
-            ProviderStatus("Claude", 20.0, 7.6, 0.23, time.time()),
-            ProviderStatus("Gemini", 15.0, 6.9, 0.05, time.time()),
-            ProviderStatus("OpenAI", 10.0, 5.8, 1.10, time.time()),
-        ]
-
-        async def get_statuses() -> list[ProviderStatus]:
-            return dummy_statuses
-
-        server = SocketServer("/tmp/test-llm-monitor.sock", store, get_statuses)
-        await server.start()
-        print("Server started. Test with:")
-        print("  echo '{\"cmd\":\"status\"}' | python3 -c \"import socket,sys; ...")
-        await asyncio.sleep(30)
-        await server.stop()
-        await store.close()
-
-    asyncio.run(_test())

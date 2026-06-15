@@ -1,7 +1,12 @@
 """
 Configuration loader for llm-usage-indicator.
-Reads TOML config from ~/.config/llm-usage-indicator/config.toml,
+Reads TOML config from the platform-appropriate user config directory,
 falling back to ./config.toml in the current directory.
+
+Config search order:
+  1. Platform config dir  (Linux: ~/.config/llm-usage-indicator/config.toml,
+                           Windows: %APPDATA%\\llm-usage-indicator\\config.toml)
+  2. ./config.toml (current directory)
 """
 
 import sys
@@ -13,23 +18,25 @@ if sys.version_info >= (3, 11):
 else:
     import tomllib  # type: ignore[no-redef]
 
+from platformdirs import user_config_dir, user_data_dir
 
-# Maps lowercase config keys to canonical provider names used in ProviderStatus.
+_APP_NAME = "llm-usage-indicator"
+
 _BUDGET_KEY_MAP: dict[str, str] = {
-    "claude": "Claude",
-    "gemini": "Gemini",
-    "openai": "OpenAI",
+    "claude":  "Claude",
+    "gemini":  "Gemini",
+    "openai":  "OpenAI",
     "copilot": "Copilot",
-    "other": "Other",
+    "other":   "Other",
 }
 
 
 @dataclass
 class GeneralConfig:
     poll_interval: int = 60
-    socket_path: str = "/tmp/llm-monitor.sock"
-    db_path: str = "~/.local/share/llm-usage-indicator/data.db"
-    ccusage_cmd: str = "npx ccusage@latest"
+    ipc_host: str = "127.0.0.1"
+    ipc_port: int = 37891
+    db_path: str = ""  # empty → resolved via platformdirs at runtime
 
 
 @dataclass
@@ -39,21 +46,19 @@ class Config:
 
     @property
     def db_path_expanded(self) -> Path:
-        return Path(self.general.db_path).expanduser()
-
-    @property
-    def socket_path(self) -> str:
-        return self.general.socket_path
+        if self.general.db_path:
+            return Path(self.general.db_path).expanduser()
+        return Path(user_data_dir(_APP_NAME)) / "data.db"
 
 
 def _resolve_config_path() -> Path:
-    user_config = Path.home() / ".config" / "llm-usage-indicator" / "config.toml"
-    if user_config.exists():
-        return user_config
-    local_config = Path("config.toml")
-    if local_config.exists():
-        return local_config
-    return user_config
+    user_cfg = Path(user_config_dir(_APP_NAME)) / "config.toml"
+    if user_cfg.exists():
+        return user_cfg
+    local_cfg = Path("config.toml")
+    if local_cfg.exists():
+        return local_cfg
+    return user_cfg
 
 
 def load_config() -> Config:
@@ -63,19 +68,17 @@ def load_config() -> Config:
         with open(path, "rb") as f:
             raw = tomllib.load(f)
 
-    general_raw = raw.get("general", {})
-    budgets_raw = raw.get("budgets", {})
-
+    g = raw.get("general", {})
     general = GeneralConfig(
-        poll_interval=int(general_raw.get("poll_interval", 60)),
-        socket_path=general_raw.get("socket_path", "/tmp/llm-monitor.sock"),
-        db_path=general_raw.get("db_path", "~/.local/share/llm-usage-indicator/data.db"),
-        ccusage_cmd=general_raw.get("ccusage_cmd", "npx ccusage@latest"),
+        poll_interval=int(g.get("poll_interval", 60)),
+        ipc_host=g.get("ipc_host", "127.0.0.1"),
+        ipc_port=int(g.get("ipc_port", 37891)),
+        db_path=g.get("db_path", ""),
     )
 
     budgets = {
         _BUDGET_KEY_MAP.get(k.lower(), k.title()): float(v)
-        for k, v in budgets_raw.items()
+        for k, v in raw.get("budgets", {}).items()
     }
 
     return Config(general=general, budgets=budgets)

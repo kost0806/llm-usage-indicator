@@ -1,62 +1,38 @@
-#!/usr/bin/env python3
 """
-System tray indicator for llm-usage-indicator.
+Cross-platform system tray indicator for llm-usage-indicator.
 
-On GNOME / Unity: uses AppIndicator3 to show text labels in the status bar.
-On X11 (KDE, XFCE, i3, etc.): falls back to Gtk.StatusIcon with a tooltip.
+Uses pystray (Windows: Win32 NotifyIcon, Linux: GTK StatusIcon,
+macOS: Cocoa) + Pillow for icon rendering.
 
 Required:
-  sudo apt install python3-gi gir1.2-gtk-3.0
-  # For GNOME text labels (optional):
-  sudo apt install gir1.2-appindicator3-0.1 gnome-shell-extension-appindicator
+  pip install pystray Pillow
 """
 
 import json
 import logging
-import os
+import math
 import signal
 import socket
-import subprocess
 import sys
 import threading
 from pathlib import Path
 
-try:
-    import gi
-    gi.require_version("Gtk", "3.0")
-    from gi.repository import Gtk, GLib
-except (ImportError, ValueError) as exc:
-    print(
-        f"ERROR: {exc}\n"
-        "Install with: sudo apt install python3-gi gir1.2-gtk-3.0",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+import pystray
+from PIL import Image, ImageDraw
 
-_HAVE_APPINDICATOR = False
-try:
-    gi.require_version("AppIndicator3", "0.1")
-    from gi.repository import AppIndicator3
-    _HAVE_APPINDICATOR = True
-except (ImportError, ValueError):
-    pass
-
-SOCKET_PATH = os.environ.get("LLM_MONITOR_SOCK", "/tmp/llm-monitor.sock")
-REFRESH_INTERVAL_MS = 30_000
+IPC_HOST = "127.0.0.1"
+IPC_PORT = 37891
+REFRESH_INTERVAL_S = 30.0
 SOCKET_TIMEOUT_S = 3
-_ICON = "utilities-system-monitor"
 
 logger = logging.getLogger(__name__)
 
 
-# ── Socket helper ─────────────────────────────────────────────────────────────
+# ── Daemon communication ──────────────────────────────────────────────────────
 
 def _fetch_status() -> dict | None:
-    """Query the daemon and return the parsed JSON dict, or None on error."""
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(SOCKET_TIMEOUT_S)
-            s.connect(SOCKET_PATH)
+        with socket.create_connection((IPC_HOST, IPC_PORT), timeout=SOCKET_TIMEOUT_S) as s:
             s.sendall(b'{"cmd":"status"}\n')
             buf = b""
             while True:
@@ -72,184 +48,293 @@ def _fetch_status() -> dict | None:
         return None
 
 
-# ── Shared helpers ────────────────────────────────────────────────────────────
+# ── Icon rendering ────────────────────────────────────────────────────────────
 
-def _bar_label(providers: list[dict]) -> tuple[str, str]:
-    """Return (label, guide) for AppIndicator3 status bar text."""
-    if not providers:
-        return "🤖 --", "🤖 --"
-    parts = []
-    for p in providers:
-        initial = p["name"][0]
-        if p["budget_usd"] > 0:
-            parts.append(f"{initial}:${p['remaining']:.2f}")
-        else:
-            parts.append(f"{initial}:↑${p['spent_today']:.2f}")
-    label = "🤖 " + "  ".join(parts)
-    guide = "🤖 " + "  ".join(["X:$000.00"] * len(parts))
-    return label, guide
+# Brand colors and emoji per provider
+PROVIDER_BRAND: dict[str, dict] = {
+    "Claude":  {"bg": (209, 90,  42),  "ring": (232, 130, 80)},   # Anthropic orange
+    "OpenAI":  {"bg": (16,  163, 127), "ring": (80,  200, 160)},  # OpenAI green
+    "Gemini":  {"bg": (66,  133, 244), "ring": (130, 170, 255)},  # Google blue
+    "Copilot": {"bg": (0,   120, 212), "ring": (80,  170, 240)},  # Microsoft blue
+    "Other":   {"bg": (100, 100, 100), "ring": (160, 160, 160)},
+}
 
-
-def _tooltip(providers: list[dict]) -> str:
-    """Return tooltip text for StatusIcon (X11 fallback)."""
-    if not providers:
-        return "LLM Usage Indicator — daemon not running"
-    lines = ["LLM Usage Indicator"]
-    for p in providers:
-        if p["budget_usd"] > 0:
-            lines.append(
-                f"  {p['name']}: ${p['remaining']:.2f} remaining"
-                f" ({p['remaining_pct']:.0f}%)  ↑ ${p['spent_today']:.4f} today"
-            )
-        else:
-            lines.append(f"  {p['name']}: ${p['spent_today']:.4f} today (no budget)")
-    return "\n".join(lines)
+PROVIDER_EMOJI: dict[str, str] = {
+    "Claude":  "🟠",
+    "OpenAI":  "🟢",
+    "Gemini":  "🔵",
+    "Copilot": "🟦",
+    "Other":   "⚪",
+}
 
 
-def _open_settings(_item=None) -> None:
-    settings_bin = Path.home() / ".local" / "bin" / "llm-usage-indicator-settings"
-    if settings_bin.exists():
-        subprocess.Popen([str(settings_bin)])
+def _logo_claude(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: tuple) -> None:
+    """Anthropic asterisk: 6 thick lines radiating from center."""
+    w = max(2, r // 4)
+    for i in range(6):
+        angle = math.radians(i * 60 - 90)
+        x1 = cx + (r * 0.28) * math.cos(angle)
+        y1 = cy + (r * 0.28) * math.sin(angle)
+        x2 = cx + r * math.cos(angle)
+        y2 = cy + r * math.sin(angle)
+        draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+
+
+def _logo_openai(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: tuple) -> None:
+    """OpenAI gear-ring: outer ring + 6 small nodes + center dot."""
+    w = max(2, r // 5)
+    draw.arc([cx - r, cy - r, cx + r, cy + r], 0, 360, fill=color, width=w)
+    nr = max(2, r // 6)
+    for i in range(6):
+        angle = math.radians(i * 60)
+        mx = int(cx + r * math.cos(angle))
+        my = int(cy + r * math.sin(angle))
+        draw.ellipse([mx - nr, my - nr, mx + nr, my + nr], fill=color)
+    cr = max(2, r // 5)
+    draw.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=color)
+
+
+def _logo_gemini(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: tuple) -> None:
+    """Gemini 4-pointed star."""
+    points = []
+    for i in range(8):
+        angle = math.radians(i * 45 - 90)
+        radius = r if i % 2 == 0 else r * 0.28
+        points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    draw.polygon(points, fill=color)
+
+
+def _logo_copilot(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, _color: tuple) -> None:
+    """Microsoft Copilot: 2×2 colored squares."""
+    colors = [(243, 59, 86), (255, 185, 0), (0, 183, 154), (0, 120, 212)]
+    s = max(3, r // 2 - 1)
+    gap = max(1, r // 8)
+    positions = [
+        (cx - s - gap, cy - s - gap),
+        (cx + gap,     cy - s - gap),
+        (cx - s - gap, cy + gap),
+        (cx + gap,     cy + gap),
+    ]
+    for (px, py), c in zip(positions, colors):
+        draw.rounded_rectangle([px, py, px + s, py + s], radius=max(1, s // 4), fill=c)
+
+
+_LOGO_FN = {
+    "Claude":  _logo_claude,
+    "OpenAI":  _logo_openai,
+    "Gemini":  _logo_gemini,
+    "Copilot": _logo_copilot,
+}
+
+
+def _single_provider_icon(name: str, warning: bool, error: bool) -> Image.Image:
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    brand = PROVIDER_BRAND.get(name, PROVIDER_BRAND["Other"])
+
+    if error:
+        ring = (180, 60, 60)
+    elif warning:
+        ring = (220, 160, 30)
     else:
-        subprocess.Popen([sys.executable, "-m", "llm_usage_indicator.settings_gui"])
+        ring = brand["ring"]
+
+    # Filled circle background
+    draw.ellipse([3, 3, 61, 61], fill=brand["bg"] + (255,))
+    # Status ring
+    draw.arc([1, 1, 63, 63], 0, 360, fill=ring + (255,), width=3)
+
+    logo_fn = _LOGO_FN.get(name)
+    if logo_fn:
+        logo_fn(draw, 32, 32, 19, (255, 255, 255))
+    else:
+        # Generic: circle outline
+        draw.arc([13, 13, 51, 51], 0, 360, fill=(255, 255, 255), width=3)
+
+    return img
 
 
-def _build_menu(data: dict | None, on_refresh) -> Gtk.Menu:
-    menu = Gtk.Menu()
+def _small_provider_badge(name: str, size: int) -> Image.Image:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    brand = PROVIDER_BRAND.get(name, PROVIDER_BRAND["Other"])
+    cx = cy = size // 2
+    r = cx - 2
+    draw.ellipse([2, 2, size - 3, size - 3], fill=brand["bg"] + (255,))
+    logo_fn = _LOGO_FN.get(name)
+    if logo_fn:
+        logo_fn(draw, cx, cy, max(3, r - 3), (255, 255, 255))
+    return img
+
+
+def _make_robot_icon(warning: bool = False, error: bool = False) -> Image.Image:
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    if error:
+        body = (180, 60, 60, 255)
+    elif warning:
+        body = (200, 140, 40, 255)
+    else:
+        body = (60, 160, 90, 255)
+    draw.rounded_rectangle([6, 8, 58, 52], radius=8, fill=body)
+    draw.ellipse([16, 18, 28, 30], fill=(220, 240, 220))
+    draw.ellipse([36, 18, 48, 30], fill=(220, 240, 220))
+    draw.ellipse([19, 21, 25, 27], fill=(20, 20, 20))
+    draw.ellipse([39, 21, 45, 27], fill=(20, 20, 20))
+    draw.arc([18, 34, 46, 50], start=10, end=170, fill=(220, 240, 220), width=3)
+    draw.line([32, 8, 32, 2], fill=body, width=3)
+    draw.ellipse([29, 0, 35, 6], fill=body)
+    return img
+
+
+def _make_icon(
+    warning: bool = False,
+    error: bool = False,
+    providers: list[dict] | None = None,
+) -> Image.Image:
+    budgeted = [p for p in (providers or []) if p.get("budget_usd", 0) > 0]
+
+    if error or not budgeted:
+        return _make_robot_icon(warning=warning, error=error)
+
+    if len(budgeted) == 1:
+        return _single_provider_icon(budgeted[0]["name"], warning, error)
+
+    # Multiple providers: tile small badges
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    shown = budgeted[:4]
+    count = len(shown)
+
+    if count == 2:
+        badge_size, positions = 28, [(2, 18), (34, 18)]
+    elif count == 3:
+        badge_size, positions = 20, [(2, 22), (22, 2), (42, 22)]
+    else:
+        badge_size, positions = 28, [(2, 2), (34, 2), (2, 34), (34, 34)]
+
+    for p, pos in zip(shown, positions):
+        badge = _small_provider_badge(p["name"], badge_size)
+        img.paste(badge, pos, badge)
+
+    return img
+
+
+# ── Menu construction ─────────────────────────────────────────────────────────
+
+def _build_menu(data: dict | None, on_refresh, on_settings, on_quit) -> pystray.Menu:
+    items: list = []
     providers = (data or {}).get("providers", [])
 
-    if providers:
-        for p in providers:
-            if p["budget_usd"] > 0:
-                line = (
-                    f"{p['name']}: ${p['remaining']:.2f} remaining"
-                    f" ({p['remaining_pct']:.0f}%)  ↑ ${p['spent_today']:.4f} today"
-                )
-            else:
-                line = f"{p['name']}: ${p['spent_today']:.4f} today (no budget)"
-            item = Gtk.MenuItem(label=line)
-            item.set_sensitive(False)
-            menu.append(item)
-        menu.append(Gtk.SeparatorMenuItem())
+    budgeted = [p for p in providers if p["budget_usd"] > 0]
+
+    if budgeted:
+        for p in budgeted:
+            label = (
+                f"{p['name']}: ↑${p['spent_today']:.4f} / ${p['remaining']:.2f}"
+                f" ({p['remaining_pct']:.0f}%)"
+            )
+            items.append(pystray.MenuItem(label, None, enabled=False))
+
+        items.append(pystray.Menu.SEPARATOR)
+        total_r = sum(p["remaining"] for p in budgeted)
+        total_t = sum(p["spent_today"] for p in budgeted)
+        items.append(pystray.MenuItem(
+            f"Total: ↑${total_t:.4f} / ${total_r:.2f} remaining",
+            None, enabled=False,
+        ))
     else:
-        no_daemon = Gtk.MenuItem(label="Daemon not running")
-        no_daemon.set_sensitive(False)
-        menu.append(no_daemon)
-        menu.append(Gtk.SeparatorMenuItem())
+        items.append(pystray.MenuItem("Daemon not running", None, enabled=False))
 
-    item_settings = Gtk.MenuItem(label="Settings…")
-    item_settings.connect("activate", _open_settings)
-    menu.append(item_settings)
+    items.append(pystray.Menu.SEPARATOR)
+    items.append(pystray.MenuItem("Settings…", on_settings))
+    items.append(pystray.MenuItem("Refresh now", on_refresh))
+    items.append(pystray.Menu.SEPARATOR)
+    items.append(pystray.MenuItem("Quit", on_quit))
 
-    item_refresh = Gtk.MenuItem(label="Refresh now")
-    item_refresh.connect("activate", lambda _: on_refresh())
-    menu.append(item_refresh)
-
-    menu.append(Gtk.SeparatorMenuItem())
-
-    item_quit = Gtk.MenuItem(label="Quit")
-    item_quit.connect("activate", lambda _: Gtk.main_quit())
-    menu.append(item_quit)
-
-    menu.show_all()
-    return menu
+    return pystray.Menu(*items)
 
 
-# ── AppIndicator3 implementation (GNOME / Unity) ──────────────────────────────
+def _icon_title(providers: list[dict]) -> str:
+    budgeted = [p for p in providers if p["budget_usd"] > 0]
+    if not budgeted:
+        return "LLM Usage Indicator — daemon not running"
+    parts = [
+        f"{PROVIDER_EMOJI.get(p['name'], '⚙')} {p['name']}: ↑${p['spent_today']:.2f}/${p['remaining']:.2f}"
+        for p in budgeted
+    ]
+    return "\n".join(parts)
 
-class AppIndicatorImpl:
-    """Uses AppIndicator3 to show live cost text in the GNOME status bar."""
 
+# ── Settings launcher ─────────────────────────────────────────────────────────
+
+def _open_settings() -> None:
+    import subprocess
+    if sys.platform == "win32":
+        exe_dir = Path(sys.executable).parent
+        settings_exe = exe_dir / "llm-monitor-settings.exe"
+        if settings_exe.exists():
+            subprocess.Popen([str(settings_exe)])
+            return
+    else:
+        settings_bin = Path.home() / ".local" / "bin" / "llm-usage-indicator-settings"
+        if settings_bin.exists():
+            subprocess.Popen([str(settings_bin)])
+            return
+    # Fallback: run settings module directly
+    subprocess.Popen([sys.executable, "-m", "gui.settings"])
+
+
+# ── Tray application ──────────────────────────────────────────────────────────
+
+class TrayApp:
     def __init__(self) -> None:
-        self._ind = AppIndicator3.Indicator.new(
-            "llm-usage-indicator",
-            _ICON,
-            AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
-        )
-        self._ind.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-        self._ind.set_label("🤖 --", "🤖 C:$00.00 G:$00.00")
-        self._set_menu(None)
-        self._refresh()
-        GLib.timeout_add(REFRESH_INTERVAL_MS, self._on_timer)
-
-    def _set_menu(self, data: dict | None) -> None:
-        self._ind.set_menu(_build_menu(data, self._refresh))
-
-    def _refresh(self) -> None:
-        threading.Thread(target=self._fetch_and_apply, daemon=True).start()
-
-    def _fetch_and_apply(self) -> None:
-        GLib.idle_add(self._apply, _fetch_status())
-
-    def _apply(self, data: dict | None) -> bool:
-        providers = (data or {}).get("providers", [])
-        label, guide = _bar_label(providers)
-        self._ind.set_label(label, guide)
-        self._set_menu(data)
-        return False
-
-    def _on_timer(self) -> bool:
-        self._refresh()
-        return True
-
-
-# ── Gtk.StatusIcon fallback (X11 with system tray) ────────────────────────────
-
-class StatusIconImpl:
-    """
-    Gtk.StatusIcon for X11 environments that don't support AppIndicator3
-    (KDE, XFCE, MATE, i3+trayer, etc.).
-
-    Shows current costs in the hover tooltip; right-click opens the menu.
-    """
-
-    def __init__(self) -> None:
-        self._icon = Gtk.StatusIcon()
-        self._icon.set_from_icon_name(_ICON)
-        self._icon.set_tooltip_text("LLM Usage Indicator — loading…")
-        self._icon.set_visible(True)
-        self._icon.connect("popup-menu", self._on_popup)
         self._data: dict | None = None
-        self._refresh()
-        GLib.timeout_add(REFRESH_INTERVAL_MS, self._on_timer)
+        self._timer: threading.Timer | None = None
+        self._icon = pystray.Icon(
+            "llm-usage-indicator",
+            _make_icon(),
+            "LLM Usage Indicator",
+            menu=self._make_menu(),
+        )
+
+    def _make_menu(self) -> pystray.Menu:
+        return _build_menu(
+            self._data,
+            on_refresh=lambda: self._refresh(),
+            on_settings=lambda: _open_settings(),
+            on_quit=lambda: self._quit(),
+        )
 
     def _refresh(self) -> None:
-        threading.Thread(target=self._fetch_and_apply, daemon=True).start()
+        threading.Thread(target=self._fetch_and_update, daemon=True).start()
 
-    def _fetch_and_apply(self) -> None:
-        GLib.idle_add(self._apply, _fetch_status())
-
-    def _apply(self, data: dict | None) -> bool:
+    def _fetch_and_update(self) -> None:
+        data = _fetch_status()
         self._data = data
         providers = (data or {}).get("providers", [])
-        self._icon.set_tooltip_text(_tooltip(providers))
-        return False
 
-    def _on_timer(self) -> bool:
-        self._refresh()
-        return True
-
-    def _on_popup(self, icon, button, activate_time) -> None:
-        menu = _build_menu(self._data, self._refresh)
-        menu.popup(
-            None, None,
-            Gtk.StatusIcon.position_menu,
-            icon, button, activate_time,
+        warning = any(
+            p["remaining_pct"] < 20 and p["budget_usd"] > 0
+            for p in providers
         )
+        error = data is None
 
+        self._icon.icon = _make_icon(warning=warning, error=error, providers=providers)
+        self._icon.title = _icon_title(providers)
+        self._icon.menu = self._make_menu()
 
-# ── Backend selection ─────────────────────────────────────────────────────────
+        self._timer = threading.Timer(REFRESH_INTERVAL_S, self._refresh)
+        self._timer.daemon = True
+        self._timer.start()
 
-def _use_appindicator() -> bool:
-    """
-    True when AppIndicator3 is available AND we're running in a desktop that
-    supports it natively (GNOME with appindicator extension, or Unity).
-    For all other X11 desktops we use Gtk.StatusIcon instead.
-    """
-    if not _HAVE_APPINDICATOR:
-        return False
-    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
-    return any(name in desktop for name in ("GNOME", "UNITY"))
+    def _quit(self) -> None:
+        if self._timer:
+            self._timer.cancel()
+        self._icon.stop()
+
+    def run(self) -> None:
+        self._refresh()
+        self._icon.run()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -257,14 +342,8 @@ def _use_appindicator() -> bool:
 def main() -> None:
     logging.basicConfig(level=logging.WARNING)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-
-    if _use_appindicator():
-        AppIndicatorImpl()
-    else:
-        # X11 fallback: works on KDE, XFCE, MATE, i3+trayer, etc.
-        StatusIconImpl()
-
-    Gtk.main()
+    app = TrayApp()
+    app.run()
 
 
 if __name__ == "__main__":

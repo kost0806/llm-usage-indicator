@@ -25,32 +25,18 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }
 fi
 info "Python $PY_VER — OK"
 
-# ── Step 2: Node.js / npx check ──────────────────────────────────────────────
-info "Checking Node.js / npx..."
-NPX=$(command -v npx || true)
-if [ -z "$NPX" ]; then
-    warn "npx not found — ccusage CLI requires Node.js 18+."
-    warn "Install Node.js from https://nodejs.org/ or via your package manager:"
-    warn "  Ubuntu/Debian: sudo apt install nodejs npm"
-    warn "  Arch:          sudo pacman -S nodejs npm"
-    warn "The daemon will show zero usage until Node.js is installed."
-else
-    NODE_VER=$(node --version 2>/dev/null || echo "unknown")
-    info "Node.js $NODE_VER / npx — OK"
-fi
-
-# ── Step 3: Install Python dependencies ──────────────────────────────────────
+# ── Step 2: Install Python dependencies ──────────────────────────────────────
 info "Installing Python dependencies..."
 "$PYTHON" -m pip install -r "$SCRIPT_DIR/requirements.txt" --user -q
 info "Dependencies installed."
 
-# ── Step 4: Create config directory ──────────────────────────────────────────
+# ── Step 3: Create config directory ──────────────────────────────────────────
 CONFIG_DIR="$HOME/.config/llm-usage-indicator"
 info "Creating config directory: $CONFIG_DIR"
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 
-# ── Step 5: Copy example config (skip if exists) ─────────────────────────────
+# ── Step 4: Copy example config (skip if exists) ─────────────────────────────
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 if [ -f "$CONFIG_FILE" ]; then
     warn "Config file already exists, skipping: $CONFIG_FILE"
@@ -61,14 +47,14 @@ else
     info "→ Edit $CONFIG_FILE to set your monthly budgets."
 fi
 
-# ── Step 6: Copy daemon library ───────────────────────────────────────────────
+# ── Step 5: Copy daemon library ───────────────────────────────────────────────
 LIB_DIR="$HOME/.local/lib/llm_usage_indicator"
 info "Installing daemon to: $LIB_DIR"
 mkdir -p "$LIB_DIR"
 cp -r "$SCRIPT_DIR/daemon/"* "$LIB_DIR/"
 info "Daemon library installed."
 
-# ── Step 7: Create wrapper script ────────────────────────────────────────────
+# ── Step 6: Create wrapper script ────────────────────────────────────────────
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 WRAPPER="$BIN_DIR/llm-usage-indicator"
@@ -81,7 +67,7 @@ WRAPPER_EOF
 chmod +x "$WRAPPER"
 info "Wrapper installed: $WRAPPER"
 
-# ── Step 8: Migrate old service if present ───────────────────────────────────
+# ── Step 7: Migrate old service if present ───────────────────────────────────
 OLD_SERVICE="$HOME/.config/systemd/user/llm-credit-monitor.service"
 if [ -f "$OLD_SERVICE" ]; then
     systemctl --user disable --now llm-credit-monitor 2>/dev/null || true
@@ -89,7 +75,7 @@ if [ -f "$OLD_SERVICE" ]; then
     info "Removed old llm-credit-monitor service."
 fi
 
-# ── Step 9: Install and enable systemd service ───────────────────────────────
+# ── Step 8: Install and enable systemd service ───────────────────────────────
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 info "Installing systemd user service..."
 mkdir -p "$SYSTEMD_USER_DIR"
@@ -104,7 +90,7 @@ else
     warn "Run after login: systemctl --user enable --now llm-usage-indicator"
 fi
 
-# ── Step 10: Install Waybar script ───────────────────────────────────────────
+# ── Step 9: Install Waybar script ────────────────────────────────────────────
 WAYBAR_SCRIPTS="$HOME/.config/waybar/scripts"
 info "Installing Waybar script..."
 mkdir -p "$WAYBAR_SCRIPTS"
@@ -112,21 +98,11 @@ cp "$SCRIPT_DIR/waybar/module.sh" "$WAYBAR_SCRIPTS/llm-monitor.sh"
 chmod +x "$WAYBAR_SCRIPTS/llm-monitor.sh"
 info "Waybar script installed: $WAYBAR_SCRIPTS/llm-monitor.sh"
 
-# ── Step 11: Install GUI settings app ────────────────────────────────────────
+# ── Step 10: Install GUI settings app ────────────────────────────────────────
 info "Installing settings GUI..."
 
-# Check for PyGObject (python3-gi)
-if ! "$PYTHON" -c "import gi" 2>/dev/null; then
-    warn "python3-gi not found — settings GUI will not work."
-    warn "Install with: sudo apt install python3-gi gir1.2-gtk-3.0"
-else
-    info "python3-gi — OK"
-fi
-
-# Copy GUI script to lib dir
 cp "$SCRIPT_DIR/gui/settings.py" "$LIB_DIR/settings_gui.py"
 
-# Create settings launcher wrapper
 SETTINGS_BIN="$BIN_DIR/llm-usage-indicator-settings"
 cat > "$SETTINGS_BIN" << SETTINGS_EOF
 #!/usr/bin/env bash
@@ -135,7 +111,6 @@ SETTINGS_EOF
 chmod +x "$SETTINGS_BIN"
 info "Settings launcher installed: $SETTINGS_BIN"
 
-# Install .desktop entry so it appears in app launchers
 APPS_DIR="$HOME/.local/share/applications"
 mkdir -p "$APPS_DIR"
 cp "$SCRIPT_DIR/gui/llm-usage-indicator-settings.desktop" "$APPS_DIR/"
@@ -143,29 +118,11 @@ sed -i "s|^Exec=.*|Exec=$SETTINGS_BIN|" "$APPS_DIR/llm-usage-indicator-settings.
 update-desktop-database "$APPS_DIR" 2>/dev/null || true
 info "Desktop entry installed: $APPS_DIR/llm-usage-indicator-settings.desktop"
 
-# ── Step 12: Install tray indicator ──────────────────────────────────────────
+# ── Step 11: Install tray indicator ──────────────────────────────────────────
 info "Installing tray indicator..."
 
-# python3-gi + GTK3 required; AppIndicator3 is optional (GNOME text labels)
-if ! "$PYTHON" -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk" 2>/dev/null; then
-    warn "python3-gi / GTK3 not found — tray will not work."
-    warn "Install with: sudo apt install python3-gi gir1.2-gtk-3.0"
-else
-    info "python3-gi / GTK3 — OK"
-    if "$PYTHON" -c "
-import gi; gi.require_version('AppIndicator3','0.1')
-from gi.repository import AppIndicator3" 2>/dev/null; then
-        info "AppIndicator3 — OK (GNOME text labels enabled)"
-    else
-        info "AppIndicator3 not found — Gtk.StatusIcon X11 fallback will be used"
-        info "  For GNOME text labels: sudo apt install gir1.2-appindicator3-0.1 gnome-shell-extension-appindicator"
-    fi
-fi
-
-# Copy tray script to lib dir
 cp "$SCRIPT_DIR/gui/tray.py" "$LIB_DIR/tray.py"
 
-# Create tray launcher wrapper (runs the Python module directly)
 TRAY_BIN="$BIN_DIR/llm-usage-indicator-tray"
 cat > "$TRAY_BIN" << TRAY_EOF
 #!/usr/bin/env bash
@@ -174,15 +131,10 @@ TRAY_EOF
 chmod +x "$TRAY_BIN"
 info "Tray launcher installed: $TRAY_BIN"
 
-# Install tray systemd user service
 cp "$SCRIPT_DIR/systemd/llm-usage-indicator-tray.service" "$SYSTEMD_USER_DIR/"
 systemctl --user daemon-reload 2>/dev/null || true
 info "Tray service registered: llm-usage-indicator-tray"
 
-# Create a starter that imports the X11/Wayland display env into the systemd
-# user session and then starts the tray via systemd, so the process is
-# trackable with `systemctl --user status llm-usage-indicator-tray`.
-# Falls back to running the binary directly when systemd is unavailable.
 TRAY_STARTER="$BIN_DIR/llm-usage-indicator-tray-start"
 cat > "$TRAY_STARTER" << STARTER_EOF
 #!/usr/bin/env bash
@@ -196,14 +148,12 @@ STARTER_EOF
 chmod +x "$TRAY_STARTER"
 info "Tray starter installed: $TRAY_STARTER"
 
-# XDG autostart uses the starter so systemd tracks the tray process
 AUTOSTART_DIR="$HOME/.config/autostart"
 mkdir -p "$AUTOSTART_DIR"
 cp "$SCRIPT_DIR/gui/llm-usage-indicator-tray.desktop" "$AUTOSTART_DIR/"
 sed -i "s|^Exec=.*|Exec=$TRAY_STARTER|" "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
 info "Autostart entry installed: $AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
 
-# Start tray now if a display is available
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
     pkill -f "llm_usage_indicator.tray" 2>/dev/null || true
     systemctl --user stop llm-usage-indicator-tray 2>/dev/null || true
@@ -235,13 +185,12 @@ echo "  4. Open settings:"
 echo "       $SETTINGS_BIN"
 echo "       (or right-click the tray icon → Settings…)"
 echo ""
-echo "  5. Check service status (note: --user flag is required):"
+echo "  5. Check service status:"
 echo "       systemctl --user status llm-usage-indicator        # daemon"
 echo "       systemctl --user status llm-usage-indicator-tray   # tray"
 echo ""
 echo "  6. View logs:"
-echo "       journalctl --user -u llm-usage-indicator -f        # daemon logs"
-echo "       journalctl --user -u llm-usage-indicator-tray -f   # tray logs"
+echo "       journalctl --user -u llm-usage-indicator -f"
 echo ""
 echo "  7. Restart the daemon after editing config:"
 echo "       systemctl --user restart llm-usage-indicator"

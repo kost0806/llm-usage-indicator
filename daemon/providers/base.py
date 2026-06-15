@@ -10,7 +10,7 @@ from dataclasses import dataclass
 class ProviderStatus:
     name: str           # "Claude" | "Gemini" | "OpenAI"
     budget_usd: float   # configured total credits
-    spent_total: float  # cumulative usage (from API)
+    spent_total: float  # cumulative usage
     spent_today: float  # today's usage
     updated_at: float   # unix timestamp
 
@@ -23,6 +23,28 @@ class ProviderStatus:
         if self.budget_usd <= 0:
             return 0.0
         return self.remaining / self.budget_usd * 100
+
+
+# Checked in order; first match wins.
+MODEL_PREFIX_MAP: list[tuple[str, str]] = [
+    ("claude-",  "Claude"),
+    ("gemini-",  "Gemini"),
+    ("gpt-",     "OpenAI"),
+    ("o1-",      "OpenAI"),
+    ("o3-",      "OpenAI"),
+    ("o4-",      "OpenAI"),
+    ("chatgpt-", "OpenAI"),
+    ("codex-",   "OpenAI"),
+    ("copilot-", "Copilot"),
+]
+
+
+def model_to_provider(model_name: str) -> str:
+    lower = model_name.lower()
+    for prefix, provider in MODEL_PREFIX_MAP:
+        if lower.startswith(prefix):
+            return provider
+    return "Other"
 
 
 class AbstractProvider(ABC):
