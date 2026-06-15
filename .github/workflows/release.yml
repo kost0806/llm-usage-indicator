@@ -221,11 +221,14 @@ jobs:
       - name: Build executables (PyInstaller)
         run: pyinstaller windows/build.spec --distpath dist-win --workpath build-win
 
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
+
       - name: Build NSIS installer
-        uses: joncloud/makensis-action@v4
-        with:
-          script-file: windows/installer.nsi
-          arguments: /DVERSION=${{ needs.version.outputs.version }}
+        run: |
+          $env:PATH = "C:\Program Files (x86)\NSIS;$env:PATH"
+          makensis /DVERSION=${{ needs.version.outputs.version }} windows\installer.nsi
+        shell: pwsh
 
       - name: Compute checksum
         shell: pwsh
