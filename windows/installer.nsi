@@ -43,7 +43,7 @@ Section "Install" SEC_MAIN
   SetOutPath "$INSTDIR"
 
   ; Copy all PyInstaller-bundled files
-  File /r "dist\llm-usage-indicator\*"
+  File /r "..\dist\llm-usage-indicator\*"
 
   ; Copy default config (skip if already exists to preserve user settings)
   SetOutPath "$APPDATA\${APP_NAME}"
