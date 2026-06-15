@@ -4,17 +4,13 @@ Native JSONL provider for llm-usage-indicator.
 Reads Claude Code conversation logs directly from local JSONL files —
 no Node.js or ccusage required.
 
-Scanned paths:
-  Linux/macOS : ~/.claude/projects/**/*.jsonl
-  Windows     : %LOCALAPPDATA%\\claude\\projects\\**\\*.jsonl
+Scanned path (all platforms): ~/.claude/projects/**/*.jsonl
 """
 
 import asyncio
 import datetime
 import json
 import logging
-import os
-import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -71,9 +67,6 @@ def _parse_date(timestamp: str) -> Optional[str]:
 
 
 def _claude_projects_root() -> Optional[Path]:
-    if sys.platform == "win32":
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
-        return Path(local_app_data) / "claude" / "projects" if local_app_data else None
     return Path.home() / ".claude" / "projects"
 
 
@@ -84,9 +77,9 @@ def _scan_jsonl_files(root_override: Optional[Path] = None) -> list[Path]:
     return list(root.rglob("*.jsonl"))
 
 
-def _parse_file(path: Path) -> list[tuple[str, str, float]]:
-    """Parse one JSONL file. Returns [(date_str, model, cost_usd), ...]."""
-    results: list[tuple[str, str, float]] = []
+def _parse_file(path: Path) -> list[tuple[str, str, str, float]]:
+    """Parse one JSONL file. Returns [(request_id, date_str, model, cost_usd), ...]."""
+    results: list[tuple[str, str, str, float]] = []
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -114,15 +107,24 @@ def _parse_file(path: Path) -> list[tuple[str, str, float]]:
                 if not date_str:
                     continue
 
+                # Dedup key: prefer entry-level requestId, fall back to message id
+                request_id = (
+                    entry.get("requestId")
+                    or message.get("id")
+                    or f"{path}:{timestamp}"
+                )
+
                 # Use pre-computed cost when available (newer Claude Code versions)
-                cost = entry.get("costUSD") or entry.get("cost_usd")
-                if cost is None:
+                cost_field = entry.get("costUSD")
+                if cost_field is None:
+                    cost_field = entry.get("cost_usd")
+                if cost_field is None:
                     usage = message.get("usage", {})
                     if not usage:
                         continue
-                    cost = _compute_cost(model, usage)
+                    cost_field = _compute_cost(model, usage)
 
-                results.append((date_str, model, float(cost)))
+                results.append((request_id, date_str, model, float(cost_field)))
     except OSError:
         pass
     return results
@@ -133,13 +135,19 @@ def _aggregate(
     budgets: dict[str, float],
     today_str: str,
 ) -> list[ProviderStatus]:
-    totals: dict[str, float] = {}
+    month_str = today_str[:7]  # "YYYY-MM"
+    month_costs: dict[str, float] = {}
     today_costs: dict[str, float] = {}
+    seen_ids: set[str] = set()  # dedup by requestId across all files
 
     for path in files:
-        for date_str, model, cost in _parse_file(path):
+        for request_id, date_str, model, cost in _parse_file(path):
+            if request_id in seen_ids:
+                continue
+            seen_ids.add(request_id)
             provider = model_to_provider(model)
-            totals[provider] = totals.get(provider, 0.0) + cost
+            if date_str.startswith(month_str):
+                month_costs[provider] = month_costs.get(provider, 0.0) + cost
             if date_str == today_str:
                 today_costs[provider] = today_costs.get(provider, 0.0) + cost
 
@@ -147,12 +155,12 @@ def _aggregate(
     statuses: list[ProviderStatus] = []
     seen: set[str] = set()
 
-    for provider in sorted(totals.keys()):
+    for provider in sorted(month_costs.keys()):
         seen.add(provider)
         statuses.append(ProviderStatus(
             name=provider,
             budget_usd=budgets.get(provider, 0.0),
-            spent_total=totals[provider],
+            spent_total=month_costs[provider],
             spent_today=today_costs.get(provider, 0.0),
             updated_at=now,
         ))
