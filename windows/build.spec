@@ -11,7 +11,7 @@ ROOT = Path(SPECPATH).parent  # repo root
 
 # ── Daemon ─────────────────────────────────────────────────────────────────────
 a_daemon = Analysis(
-    [str(ROOT / "daemon" / "main.py")],
+    [str(ROOT / "windows" / "run_daemon.py")],
     pathex=[str(ROOT)],
     binaries=[],
     datas=[],
