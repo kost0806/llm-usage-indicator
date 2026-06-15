@@ -21,27 +21,39 @@ from ..store import Store
 logger = logging.getLogger(__name__)
 
 # USD per 1,000,000 tokens: (input, output, cache_write, cache_read)
-_MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
-    # Claude 4 family
-    "claude-opus-4":      (15.00, 75.00, 15.00, 1.50),
-    "claude-sonnet-4":    (3.00,  15.00, 3.00,  0.30),
-    "claude-haiku-4":     (0.80,  4.00,  0.80,  0.08),
-    # Claude 3.7 / 3.5 family
-    "claude-3-7-sonnet":  (3.00,  15.00, 3.75,  0.30),
-    "claude-3-5-sonnet":  (3.00,  15.00, 3.75,  0.30),
-    "claude-3-5-haiku":   (0.80,  4.00,  1.00,  0.08),
-    # Claude 3 family
-    "claude-3-opus":      (15.00, 75.00, 15.00, 1.50),
-    "claude-3-sonnet":    (3.00,  15.00, 3.00,  0.30),
-    "claude-3-haiku":     (0.25,  1.25,  0.30,  0.03),
-}
+# Sourced from ccusage embedded pricing (anthropic.* entries).
+# Listed most-specific-first so prefix matching picks the right tier.
+_MODEL_PRICING: list[tuple[str, tuple[float, float, float, float]]] = [
+    # Claude Fable 5
+    ("claude-fable-5",      (10.00, 50.00, 12.50, 1.00)),
+    # Claude 4 – Haiku
+    ("claude-haiku-4-5",    (1.00,  5.00,  1.25,  0.10)),
+    ("claude-haiku-4",      (1.00,  5.00,  1.25,  0.10)),
+    # Claude 4 – Opus  (4.5+ repriced vs original 4.0/4.1)
+    ("claude-opus-4-8",     (5.00,  25.00, 6.25,  0.50)),
+    ("claude-opus-4-7",     (5.00,  25.00, 6.25,  0.50)),
+    ("claude-opus-4-6",     (5.00,  25.00, 6.25,  0.50)),
+    ("claude-opus-4-5",     (5.00,  25.00, 6.25,  0.50)),
+    ("claude-opus-4-1",     (15.00, 75.00, 18.75, 1.50)),
+    ("claude-opus-4",       (15.00, 75.00, 18.75, 1.50)),
+    # Claude 4 – Sonnet
+    ("claude-sonnet-4",     (3.00,  15.00, 3.75,  0.30)),
+    # Claude 3.7 / 3.5
+    ("claude-3-7-sonnet",   (3.00,  15.00, 3.75,  0.30)),
+    ("claude-3-5-sonnet",   (3.00,  15.00, 3.75,  0.30)),
+    ("claude-3-5-haiku",    (0.80,  4.00,  1.00,  0.08)),
+    # Claude 3
+    ("claude-3-opus",       (15.00, 75.00, 18.75, 1.50)),
+    ("claude-3-sonnet",     (3.00,  15.00, 3.75,  0.30)),
+    ("claude-3-haiku",      (0.25,  1.25,  0.3125, 0.025)),
+]
 
-_DEFAULT_PRICING: tuple[float, float, float, float] = (3.00, 15.00, 3.00, 0.30)
+_DEFAULT_PRICING: tuple[float, float, float, float] = (3.00, 15.00, 3.75, 0.30)
 
 
 def _get_pricing(model: str) -> tuple[float, float, float, float]:
     lower = model.lower()
-    for prefix, pricing in _MODEL_PRICING.items():
+    for prefix, pricing in _MODEL_PRICING:
         if lower.startswith(prefix):
             return pricing
     return _DEFAULT_PRICING
