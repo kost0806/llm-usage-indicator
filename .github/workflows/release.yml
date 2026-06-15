@@ -453,11 +453,152 @@ jobs:
           PYEOF
           wait $BGPID
 
-  # ── 6. Tag & GitHub Release ───────────────────────────────────────────────
+  # ── 6. Integration smoke test (Windows) ─────────────────────────────────
+  smoke-test-windows:
+    name: Smoke test (windows-latest)
+    runs-on: windows-latest
+    needs: build-windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install aiosqlite platformdirs --quiet
+
+      - name: Test store CRUD
+        shell: pwsh
+        run: |
+          @'
+          import asyncio, sys, tempfile
+          sys.path.insert(0, '.')
+          from daemon.store import Store
+          from pathlib import Path
+
+          async def run():
+              store = Store(Path(tempfile.gettempdir()) / 'ci-test.db')
+              await store.open()
+              await store.save_snapshot('claude', 5.0, 0.5)
+              snap = await store.get_latest_snapshot('claude')
+              assert snap is not None, 'Snapshot not found'
+              await store.close()
+              print('Store test PASSED')
+
+          asyncio.run(run())
+          '@ | python
+
+      - name: Test TCP socket server (status command)
+        shell: pwsh
+        run: |
+          @'
+          import asyncio, json, time, sys, tempfile
+          sys.path.insert(0, '.')
+          from daemon.store import Store
+          from daemon.server import SocketServer
+          from daemon.providers.base import ProviderStatus
+          from pathlib import Path
+
+          TEST_PORT = 37999
+
+          async def run():
+              store = Store(Path(tempfile.gettempdir()) / 'ci-server.db')
+              await store.open()
+              statuses = [
+                  ProviderStatus('Claude', 20.0, 7.6, 0.23, time.time()),
+                  ProviderStatus('Gemini', 15.0, 6.9, 0.05, time.time()),
+                  ProviderStatus('OpenAI', 10.0, 5.8, 1.10, time.time()),
+              ]
+              async def get_statuses():
+                  return statuses
+              server = SocketServer('127.0.0.1', TEST_PORT, store, get_statuses)
+              await server.start()
+
+              r, w = await asyncio.open_connection('127.0.0.1', TEST_PORT)
+              w.write(b'{"cmd":"status"}\n')
+              await w.drain()
+              data = json.loads(await r.readline())
+              w.close(); await w.wait_closed()
+              assert len(data['providers']) == 3
+              assert abs(data['total_remaining'] - 24.70) < 0.01
+              print(f"status: total_remaining={data['total_remaining']:.2f} OK")
+
+              await server.stop()
+              await store.close()
+              print('TCP socket server test PASSED')
+
+          asyncio.run(run())
+          '@ | python
+
+      - name: Test JsonlProvider parsing
+        shell: pwsh
+        run: |
+          @'
+          import sys, asyncio, json, os, tempfile, datetime
+          sys.path.insert(0, '.')
+          from daemon.providers.jsonl_provider import JsonlProvider, _parse_file
+          from daemon.providers.base import model_to_provider
+          from daemon.store import Store
+          from pathlib import Path
+
+          assert model_to_provider('claude-sonnet-4-6') == 'Claude'
+          assert model_to_provider('gemini-1.5-pro') == 'Gemini'
+          assert model_to_provider('gpt-4o') == 'OpenAI'
+          assert model_to_provider('o3-mini') == 'OpenAI'
+          assert model_to_provider('unknown-model') == 'Other'
+          print('Model->provider mapping OK')
+
+          today = datetime.date.today().isoformat()
+          with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+              fname = f.name
+              f.write(json.dumps({
+                  'type': 'assistant',
+                  'timestamp': '2026-06-01T10:00:00.000Z',
+                  'costUSD': 5.0,
+                  'message': {'model': 'claude-sonnet-4-6-20250219'}
+              }) + '\n')
+              f.write(json.dumps({
+                  'type': 'assistant',
+                  'timestamp': today + 'T10:00:00.000Z',
+                  'message': {
+                      'model': 'claude-opus-4-8-20250514',
+                      'usage': {'input_tokens': 1000, 'output_tokens': 200,
+                                'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0}
+                  }
+              }) + '\n')
+              f.write(json.dumps({'type': 'user', 'timestamp': today + 'T10:01:00.000Z'}) + '\n')
+
+          results = _parse_file(Path(fname))
+          os.unlink(fname)
+          assert len(results) == 2, f'Expected 2 results, got {len(results)}: {results}'
+          dates = [r[1] for r in results]
+          assert '2026-06-01' in dates
+          assert today in dates
+          print(f'JSONL parsing: {len(results)} entries parsed OK')
+
+          async def run():
+              store = Store(Path(tempfile.gettempdir()) / 'ci-jsonl.db')
+              await store.open()
+              budgets = {'Claude': 20.0}
+              provider = JsonlProvider(budgets=budgets, store=store)
+              statuses = await provider.fetch_all_statuses()
+              claude = next((s for s in statuses if s.name == 'Claude'), None)
+              assert claude is not None
+              print(f'JsonlProvider zero-usage fallback OK (Claude budget={claude.budget_usd})')
+              await store.close()
+
+          asyncio.run(run())
+          print('JsonlProvider test PASSED')
+          '@ | python
+
+  # ── 7. Tag & GitHub Release ───────────────────────────────────────────────
   release:
     name: GitHub Release
     runs-on: ubuntu-22.04
-    needs: [build, build-windows, smoke-test]
+    needs: [build, build-windows, smoke-test, smoke-test-windows]
     if: needs.build.outputs.is_release == 'true'
 
     steps:
