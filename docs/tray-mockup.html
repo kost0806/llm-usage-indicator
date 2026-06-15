@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>LLM Usage Indicator — Windows Tray Mockup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #1a1a2e;
+    font-family: 'Segoe UI', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    gap: 48px;
+    padding: 40px;
+  }
+
+  h2 {
+    color: #aaa;
+    font-size: 13px;
+    font-weight: 400;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  /* ── Scene wrapper ── */
+  .scene {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0;
+  }
+
+  /* ── Context menu (pystray popup) ── */
+  .tray-menu {
+    background: #2b2b2b;
+    border: 1px solid #444;
+    border-radius: 6px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.4);
+    min-width: 280px;
+    overflow: hidden;
+    margin-bottom: 2px;
+  }
+
+  .menu-header {
+    background: #1e1e1e;
+    padding: 10px 14px 8px;
+    border-bottom: 1px solid #3a3a3a;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .menu-header .icon { font-size: 18px; }
+  .menu-header .title {
+    color: #e0e0e0;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .menu-header .subtitle {
+    color: #888;
+    font-size: 11px;
+    margin-top: 1px;
+  }
+
+  .menu-section {
+    padding: 4px 0;
+  }
+  .menu-section + .menu-section {
+    border-top: 1px solid #3a3a3a;
+  }
+
+  .menu-item {
+    display: flex;
+    align-items: center;
+    padding: 7px 14px;
+    cursor: default;
+    user-select: none;
+    transition: background 0.1s;
+  }
+  .menu-item:hover {
+    background: #3c3c3c;
+  }
+  .menu-item.disabled {
+    cursor: default;
+  }
+  .menu-item.disabled:hover {
+    background: transparent;
+  }
+
+  .provider-row {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    gap: 3px;
+  }
+  .provider-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .provider-name {
+    color: #d4d4d4;
+    font-size: 12.5px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .provider-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+  .dot-claude  { background: #f4a261; }
+  .dot-gemini  { background: #4fc3f7; }
+  .dot-openai  { background: #a8d8a8; }
+
+  .provider-remaining {
+    color: #c8e6c9;
+    font-size: 12.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .provider-remaining.warning { color: #ffcc80; }
+  .provider-remaining.danger  { color: #ef9a9a; }
+
+  .progress-bar-bg {
+    height: 3px;
+    background: #444;
+    border-radius: 2px;
+    overflow: hidden;
+    flex: 1;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s;
+  }
+  .fill-claude  { background: linear-gradient(90deg, #f4a261, #e76f51); }
+  .fill-gemini  { background: linear-gradient(90deg, #4fc3f7, #0288d1); }
+  .fill-openai  { background: linear-gradient(90deg, #a8d8a8, #4caf50); }
+
+  .provider-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 1px;
+  }
+  .provider-pct {
+    color: #888;
+    font-size: 10.5px;
+  }
+  .provider-today {
+    color: #aaa;
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .provider-today span { color: #ef9a9a; }
+
+  .progress-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+  }
+
+  /* action items */
+  .action-label {
+    color: #c8c8c8;
+    font-size: 12.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .action-label .ico { font-size: 14px; opacity: 0.8; }
+
+  /* total row */
+  .total-row {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+  }
+  .total-label { color: #888; font-size: 11.5px; }
+  .total-value { color: #e0e0e0; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* ── Windows Taskbar ── */
+  .taskbar {
+    background: linear-gradient(180deg, #1c1c1c 0%, #111 100%);
+    border-top: 1px solid #2e2e2e;
+    height: 40px;
+    width: 100%;
+    min-width: 480px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 8px;
+    gap: 2px;
+    border-radius: 0 0 4px 4px;
+  }
+
+  .tray-area {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    border-radius: 4px;
+  }
+
+  .tray-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    background: #2d6a4f;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    cursor: pointer;
+    border: 2px solid #52b788;
+    box-shadow: 0 0 6px rgba(82,183,136,0.4);
+    position: relative;
+  }
+
+  .tray-clock {
+    color: #c8c8c8;
+    font-size: 11px;
+    text-align: right;
+    line-height: 1.4;
+    padding: 0 6px;
+    border-left: 1px solid #333;
+    margin-left: 4px;
+  }
+
+  /* ── Tooltip ── */
+  .tooltip-bubble {
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 5px;
+    padding: 8px 12px;
+    min-width: 220px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    margin-bottom: 6px;
+    margin-right: 8px;
+  }
+  .tooltip-line {
+    color: #d0d0d0;
+    font-size: 11.5px;
+    line-height: 1.8;
+    font-variant-numeric: tabular-nums;
+  }
+  .tooltip-line .hi { color: #80cbc4; font-weight: 600; }
+
+  /* ── Labels ── */
+  .label-tag {
+    color: #666;
+    font-size: 11px;
+    margin-top: 4px;
+    text-align: right;
+  }
+
+  /* ── Section title ── */
+  .section-title {
+    color: #555;
+    font-size: 11px;
+    text-align: center;
+    margin-bottom: 8px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════
+     SCENE 1: Click → Context Menu
+════════════════════════════════════════════ -->
+<div>
+  <p class="section-title">① 트레이 아이콘 클릭 시 — Context Menu (pystray)</p>
+  <div class="scene">
+
+    <div class="tray-menu">
+      <!-- Header -->
+      <div class="menu-header">
+        <span class="icon">🤖</span>
+        <div>
+          <div class="title">LLM Usage Indicator</div>
+          <div class="subtitle">총 잔여 $25.70 · 오늘 $4.60 사용</div>
+        </div>
+      </div>
+
+      <!-- Provider stats -->
+      <div class="menu-section">
+
+        <!-- Claude -->
+        <div class="menu-item disabled">
+          <div class="provider-row">
+            <div class="provider-top">
+              <span class="provider-name">
+                <span class="provider-dot dot-claude"></span>Claude
+              </span>
+              <span class="provider-remaining">$13.50 남음</span>
+            </div>
+            <div class="progress-row">
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill fill-claude" style="width:67%"></div>
+              </div>
+              <span class="provider-pct">67%</span>
+            </div>
+            <div class="provider-meta">
+              <span class="provider-pct">예산 $20.00</span>
+              <span class="provider-today">오늘 <span>↑$1.50</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Gemini -->
+        <div class="menu-item disabled">
+          <div class="provider-row">
+            <div class="provider-top">
+              <span class="provider-name">
+                <span class="provider-dot dot-gemini"></span>Gemini
+              </span>
+              <span class="provider-remaining">$8.30 남음</span>
+            </div>
+            <div class="progress-row">
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill fill-gemini" style="width:55%"></div>
+              </div>
+              <span class="provider-pct">55%</span>
+            </div>
+            <div class="provider-meta">
+              <span class="provider-pct">예산 $15.00</span>
+              <span class="provider-today">오늘 <span>↑$0.80</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- OpenAI -->
+        <div class="menu-item disabled">
+          <div class="provider-row">
+            <div class="provider-top">
+              <span class="provider-name">
+                <span class="provider-dot dot-openai"></span>OpenAI
+              </span>
+              <span class="provider-remaining warning">$3.90 남음</span>
+            </div>
+            <div class="progress-row">
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill fill-openai" style="width:39%"></div>
+              </div>
+              <span class="provider-pct">39%</span>
+            </div>
+            <div class="provider-meta">
+              <span class="provider-pct">예산 $10.00</span>
+              <span class="provider-today">오늘 <span>↑$2.30</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Total -->
+      <div class="menu-section">
+        <div class="menu-item disabled">
+          <div class="total-row">
+            <span class="total-label">합계 잔여</span>
+            <span class="total-value">$25.70</span>
+          </div>
+        </div>
+        <div class="menu-item disabled">
+          <div class="total-row">
+            <span class="total-label">오늘 합계</span>
+            <span class="total-value" style="color:#ef9a9a">↑$4.60</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="menu-section">
+        <div class="menu-item">
+          <span class="action-label"><span class="ico">⚙️</span>Settings…</span>
+        </div>
+        <div class="menu-item">
+          <span class="action-label"><span class="ico">🔄</span>Refresh now</span>
+        </div>
+      </div>
+      <div class="menu-section">
+        <div class="menu-item">
+          <span class="action-label"><span class="ico">✕</span>Quit</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Taskbar -->
+    <div class="taskbar">
+      <div class="tray-area">
+        <div class="tray-icon" title="LLM Usage Indicator">🤖</div>
+      </div>
+      <div class="tray-clock">
+        04:30<br>2026-06-15
+      </div>
+    </div>
+    <p class="label-tag">▲ 트레이 아이콘 우클릭 or 클릭</p>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════
+     SCENE 2: Hover Tooltip
+════════════════════════════════════════════ -->
+<div>
+  <p class="section-title">② 트레이 아이콘 호버 시 — Tooltip</p>
+  <div class="scene">
+
+    <div class="tooltip-bubble">
+      <div class="tooltip-line">🤖 <strong style="color:#e0e0e0">LLM Usage Indicator</strong></div>
+      <div style="height:6px"></div>
+      <div class="tooltip-line"><span style="color:#f4a261">●</span> Claude   <span class="hi">$13.50</span> 남음 (67%)  ↑$1.50</div>
+      <div class="tooltip-line"><span style="color:#4fc3f7">●</span> Gemini   <span class="hi">$8.30</span> 남음 (55%)  ↑$0.80</div>
+      <div class="tooltip-line"><span style="color:#a8d8a8">●</span> OpenAI   <span class="hi">$3.90</span> 남음 (39%)  ↑$2.30</div>
+      <div style="height:4px; border-top:1px solid #333; margin:6px 0"></div>
+      <div class="tooltip-line" style="color:#888">마지막 갱신: 04:29 (60초마다 갱신)</div>
+    </div>
+
+    <div class="taskbar">
+      <div class="tray-area" style="background:#2a2a2a;">
+        <div class="tray-icon" style="border-color:#80cbc4; box-shadow:0 0 10px rgba(128,203,196,0.5);">🤖</div>
+      </div>
+      <div class="tray-clock">
+        04:30<br>2026-06-15
+      </div>
+    </div>
+    <p class="label-tag">▲ 트레이 아이콘에 마우스를 올렸을 때</p>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════
+     SCENE 3: Low budget warning
+════════════════════════════════════════════ -->
+<div>
+  <p class="section-title">③ 예산 부족 경고 상태</p>
+  <div class="scene">
+
+    <div class="tray-menu" style="min-width:280px">
+      <div class="menu-header" style="background:#3b1a1a; border-bottom-color:#5a2a2a;">
+        <span class="icon">⚠️</span>
+        <div>
+          <div class="title" style="color:#ef9a9a">예산 부족 경고</div>
+          <div class="subtitle">1개 provider 잔여 20% 미만</div>
+        </div>
+      </div>
+      <div class="menu-section">
+        <div class="menu-item disabled">
+          <div class="provider-row">
+            <div class="provider-top">
+              <span class="provider-name">
+                <span class="provider-dot dot-openai"></span>OpenAI
+              </span>
+              <span class="provider-remaining danger">$1.20 남음</span>
+            </div>
+            <div class="progress-row">
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" style="width:12%; background:linear-gradient(90deg,#ef9a9a,#e53935);"></div>
+              </div>
+              <span class="provider-pct" style="color:#ef9a9a">12%</span>
+            </div>
+            <div class="provider-meta">
+              <span class="provider-pct">예산 $10.00</span>
+              <span class="provider-today">오늘 <span>↑$3.80</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="menu-section">
+        <div class="menu-item">
+          <span class="action-label"><span class="ico">⚙️</span>Settings…</span>
+        </div>
+        <div class="menu-item">
+          <span class="action-label"><span class="ico">🔄</span>Refresh now</span>
+        </div>
+      </div>
+      <div class="menu-section">
+        <div class="menu-item">
+          <span class="action-label"><span class="ico">✕</span>Quit</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="taskbar">
+      <div class="tray-area">
+        <!-- 경고 시 아이콘 색상 변경 -->
+        <div class="tray-icon" style="background:#5c1a1a; border-color:#ef9a9a; box-shadow:0 0 8px rgba(239,154,154,0.5);">⚠️</div>
+      </div>
+      <div class="tray-clock">04:30<br>2026-06-15</div>
+    </div>
+    <p class="label-tag">▲ 잔여 예산 20% 미만 시 아이콘 변경</p>
+  </div>
+</div>
+
+</body>
+</html>
