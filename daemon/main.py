@@ -2,16 +2,18 @@
 Main asyncio entry point for llm-usage-indicator daemon.
 
 Configuration search order:
-  1. ~/.config/llm-usage-indicator/config.toml
+  1. Platform config dir (Linux: ~/.config/llm-usage-indicator/config.toml,
+                          Windows: %APPDATA%\\llm-usage-indicator\\config.toml)
   2. ./config.toml (current directory)
 
-Logs: ~/.local/share/llm-usage-indicator/monitor.log (rotating, 1MB x 3 files)
+Logs: <platform data dir>/llm-usage-indicator/monitor.log (rotating, 1MB x 3)
 """
 
 import asyncio
 import logging
 import logging.handlers
 import signal
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -19,7 +21,7 @@ from .config import load_config, Config
 from .store import Store
 from .server import SocketServer
 from .providers.base import ProviderStatus
-from .providers.ccusage_p import CcusageProvider
+from .providers.jsonl_provider import JsonlProvider
 
 
 def _setup_logging(log_dir: Path) -> None:
@@ -43,7 +45,7 @@ class Daemon:
     def __init__(self) -> None:
         self._cfg: Config = load_config()
         self._store: Store = Store(self._cfg.db_path_expanded)
-        self._provider: Optional[CcusageProvider] = None
+        self._provider: Optional[JsonlProvider] = None
         self._cached_statuses: list[ProviderStatus] = []
         self._server: Optional[SocketServer] = None
         self._shutdown_event = asyncio.Event()
@@ -54,7 +56,7 @@ class Daemon:
             statuses = await self._provider.fetch_all_statuses()
             self._cached_statuses = statuses
         except Exception as exc:
-            logger.warning("ccusage poll failed: %s", exc)
+            logger.warning("JSONL poll failed: %s", exc)
 
     async def _get_cached_statuses(self) -> list[ProviderStatus]:
         return list(self._cached_statuses)
@@ -78,30 +80,37 @@ class Daemon:
 
         await self._store.open()
 
-        self._provider = CcusageProvider(
+        self._provider = JsonlProvider(
             budgets=self._cfg.budgets,
             store=self._store,
-            ccusage_cmd=self._cfg.general.ccusage_cmd,
         )
 
-        # Initial poll so status is available immediately.
         await self._poll_all_once()
 
         self._server = SocketServer(
-            socket_path=self._cfg.general.socket_path,
+            host=self._cfg.general.ipc_host,
+            port=self._cfg.general.ipc_port,
             store=self._store,
             get_cached_statuses=self._get_cached_statuses,
         )
         await self._server.start()
 
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, self._shutdown_event.set)
+        self._register_signals()
 
         try:
             await self._polling_loop()
         finally:
             await self._shutdown()
+
+    def _register_signals(self) -> None:
+        shutdown = self._shutdown_event
+        if sys.platform != "win32":
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, shutdown.set)
+        else:
+            signal.signal(signal.SIGTERM, lambda *_: shutdown.set())
+            signal.signal(signal.SIGINT, lambda *_: shutdown.set())
 
     async def _shutdown(self) -> None:
         logger.info("Shutting down llm-usage-indicator")

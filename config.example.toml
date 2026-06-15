@@ -1,12 +1,13 @@
 [general]
-poll_interval = 60                          # polling interval (seconds)
-socket_path   = "/tmp/llm-monitor.sock"
-db_path       = "~/.local/share/llm-usage-indicator/data.db"
-ccusage_cmd   = "npx ccusage@latest"        # ccusage CLI command
+poll_interval = 60                       # JSONL 파싱 주기 (초)
+ipc_host      = "127.0.0.1"             # IPC 서버 주소
+ipc_port      = 37891                   # IPC 서버 포트
+db_path       = ""                      # 비워두면 플랫폼 기본 경로 사용
+                                         # Linux:   ~/.local/share/llm-usage-indicator/
+                                         # Windows: %LOCALAPPDATA%\llm-usage-indicator\
 
-# Monthly credit budgets per provider (USD).
-# ccusage detects provider from model name prefix automatically.
+# 월별 크레딧 예산 (USD) — 잔여 크레딧 계산에 사용
 [budgets]
-claude  = 20.00
-gemini  = 15.00
-openai  = 10.00
+claude = 20.00
+gemini = 15.00
+openai = 10.00

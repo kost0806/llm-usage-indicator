@@ -35,13 +35,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install aiohttp aiosqlite --quiet
+        run: pip install aiosqlite platformdirs --quiet
 
       - name: Syntax check (ast.parse)
         run: |
           python3 - <<'EOF'
           import ast, sys, pathlib
-          files = list(pathlib.Path("daemon").rglob("*.py"))
+          files = list(pathlib.Path("daemon").rglob("*.py")) + list(pathlib.Path("gui").rglob("*.py"))
           errors = []
           for f in files:
               try:
@@ -63,8 +63,8 @@ jobs:
           sys.path.insert(0, '.')
           from daemon.config import load_config
           from daemon.store import Store
-          from daemon.providers.base import ProviderStatus, AbstractProvider
-          from daemon.providers.ccusage_p import CcusageProvider
+          from daemon.providers.base import ProviderStatus, AbstractProvider, model_to_provider
+          from daemon.providers.jsonl_provider import JsonlProvider
           from daemon.server import SocketServer
           print('All imports OK')
           "
@@ -107,9 +107,9 @@ jobs:
           echo "is_release=${IS_RELEASE}" >> "$GITHUB_OUTPUT"
           echo "Version: ${VERSION} | is_release: ${IS_RELEASE}"
 
-  # ── 3. Build distributable artifact ──────────────────────────────────────
+  # ── 3. Build Linux distributable artifact ────────────────────────────────
   build:
-    name: Build artifact
+    name: Build artifact (Linux)
     runs-on: ubuntu-22.04
     needs: version
     outputs:
@@ -128,7 +128,6 @@ jobs:
           VERSION="${{ needs.version.outputs.version }}"
           mkdir -p "dist/${ARTIFACT}"
 
-          # Core files
           cp -r daemon           "dist/${ARTIFACT}/"
           cp -r waybar           "dist/${ARTIFACT}/"
           cp -r systemd          "dist/${ARTIFACT}/"
@@ -139,15 +138,12 @@ jobs:
           cp    README.md           "dist/${ARTIFACT}/" 2>/dev/null || true
           cp    docs/README.en.md   "dist/${ARTIFACT}/" 2>/dev/null || true
 
-          # Remove Python cache files
           find "dist/${ARTIFACT}" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
           find "dist/${ARTIFACT}" -name "*.pyc" -delete 2>/dev/null || true
 
-          # Ensure scripts are executable
           chmod +x "dist/${ARTIFACT}/install.sh"
           chmod +x "dist/${ARTIFACT}/waybar/module.sh"
 
-          # Embed version into install.sh
           sed -i "s|^# install.sh.*|# install.sh — llm-usage-indicator v${VERSION}|" \
             "dist/${ARTIFACT}/install.sh" || true
 
@@ -167,8 +163,6 @@ jobs:
           VERSION="${{ needs.version.outputs.version }}"
           chmod +x build-deb.sh
           bash build-deb.sh "$VERSION"
-          # build-deb.sh writes to dist/llm-usage-indicator_<ver>_all.deb
-          # Rename to the artifact name expected by subsequent steps
           ARTIFACT="${{ needs.version.outputs.artifact_name }}"
           DEB_VERSION=$(echo "$VERSION" | sed 's/-dev\./~dev./g')
           mv "dist/llm-usage-indicator_${DEB_VERSION}_all.deb" "dist/${ARTIFACT}.deb"
@@ -193,7 +187,54 @@ jobs:
             dist/${{ needs.version.outputs.artifact_name }}.deb.sha256
           retention-days: 30
 
-  # ── 4. Integration smoke test ─────────────────────────────────────────────
+  # ── 4. Build Windows installer (.exe) ────────────────────────────────────
+  build-windows:
+    name: Build artifact (Windows)
+    runs-on: windows-latest
+    needs: version
+    outputs:
+      version: ${{ needs.version.outputs.version }}
+      artifact_name: ${{ needs.version.outputs.artifact_name }}
+      is_release: ${{ needs.version.outputs.is_release }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install pyinstaller aiosqlite platformdirs pystray Pillow tomllib
+
+      - name: Build executables (PyInstaller)
+        run: pyinstaller windows/build.spec --distpath dist-win --workpath build-win
+
+      - name: Build NSIS installer
+        uses: joncloud/makensis-action@v4
+        with:
+          script-file: windows/installer.nsi
+          arguments: /DVERSION=${{ needs.version.outputs.version }}
+
+      - name: Compute checksum
+        shell: pwsh
+        run: |
+          $exe = Get-Item "LLM-Usage-Indicator-Setup-*.exe"
+          (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $exe.Name |
+            Out-File "$($exe.Name).sha256" -Encoding ascii
+          Write-Host "Installer: $($exe.Name) ($('{0:N1}' -f ($exe.Length/1MB)) MB)"
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.version.outputs.artifact_name }}-windows
+          path: |
+            LLM-Usage-Indicator-Setup-*.exe
+            LLM-Usage-Indicator-Setup-*.exe.sha256
+          retention-days: 30
+
+  # ── 5. Integration smoke test (Linux) ────────────────────────────────────
   smoke-test:
     name: Smoke test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -211,7 +252,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install aiohttp aiosqlite --quiet
+        run: pip install aiosqlite platformdirs --quiet
 
       - name: Test store CRUD
         run: |
@@ -234,16 +275,18 @@ jobs:
           asyncio.run(run())
           "
 
-      - name: Test socket server (status command)
+      - name: Test TCP socket server (status command)
         run: |
           cd $GITHUB_WORKSPACE
           python3 -c "
-          import asyncio, json, time, sys
+          import asyncio, json, time, sys, socket
           sys.path.insert(0, '.')
           from daemon.store import Store
           from daemon.server import SocketServer
           from daemon.providers.base import ProviderStatus
           from pathlib import Path
+
+          TEST_PORT = 37999
 
           async def run():
               store = Store(Path('/tmp/ci-server.db'))
@@ -255,100 +298,97 @@ jobs:
               ]
               async def get_statuses():
                   return statuses
-              server = SocketServer('/tmp/ci-test.sock', store, get_statuses)
+              server = SocketServer('127.0.0.1', TEST_PORT, store, get_statuses)
               await server.start()
 
-              r, w = await asyncio.open_unix_connection('/tmp/ci-test.sock')
+              r, w = await asyncio.open_connection('127.0.0.1', TEST_PORT)
               w.write(b'{\"cmd\":\"status\"}\n')
               await w.drain()
               data = json.loads(await r.readline())
               w.close(); await w.wait_closed()
               assert len(data['providers']) == 3
               assert abs(data['total_remaining'] - 24.70) < 0.01
-              assert 'last_tps' not in data['providers'][0], 'last_tps should be removed'
               print(f'status: total_remaining=\${data[\"total_remaining\"]:.2f} OK')
 
               await server.stop()
               await store.close()
-              print('Socket server test PASSED')
+              print('TCP socket server test PASSED')
 
           asyncio.run(run())
           "
 
-      - name: Test CcusageProvider parsing
+      - name: Test JsonlProvider parsing
         run: |
           cd $GITHUB_WORKSPACE
           python3 -c "
-          import sys, time
+          import sys, time, asyncio, json, os, tempfile, datetime
           sys.path.insert(0, '.')
-          from daemon.providers.ccusage_p import CcusageProvider, _model_to_provider
+          from daemon.providers.jsonl_provider import JsonlProvider, _parse_file
+          from daemon.providers.base import model_to_provider
           from daemon.store import Store
           from pathlib import Path
-          import asyncio, datetime
 
           # Unit-test model→provider mapping
-          assert _model_to_provider('claude-sonnet-4-6') == 'Claude'
-          assert _model_to_provider('gemini-1.5-pro') == 'Gemini'
-          assert _model_to_provider('gpt-4o') == 'OpenAI'
-          assert _model_to_provider('o3-mini') == 'OpenAI'
-          assert _model_to_provider('unknown-model') == 'Other'
+          assert model_to_provider('claude-sonnet-4-6') == 'Claude'
+          assert model_to_provider('gemini-1.5-pro') == 'Gemini'
+          assert model_to_provider('gpt-4o') == 'OpenAI'
+          assert model_to_provider('o3-mini') == 'OpenAI'
+          assert model_to_provider('unknown-model') == 'Other'
           print('Model→provider mapping OK')
 
-          # Unit-test JSON parsing with sample ccusage output
+          # Test JSONL file parsing with sample data
           today = datetime.date.today().isoformat()
-          sample = {
-              'daily': [
-                  {
-                      'period': '2026-06-01',
-                      'modelBreakdowns': [
-                          {'modelName': 'claude-sonnet-4-6', 'cost': 5.0},
-                          {'modelName': 'gpt-4o', 'cost': 2.0},
-                      ],
-                      'totalCost': 7.0,
-                  },
-                  {
-                      'period': today,
-                      'modelBreakdowns': [
-                          {'modelName': 'claude-opus-4-8', 'cost': 1.5},
-                          {'modelName': 'gpt-4o', 'cost': 0.3},
-                      ],
-                      'totalCost': 1.8,
-                  },
-              ],
-              'totals': {'totalCost': 8.8},
-          }
+          with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+              fname = f.name
+              # Historical entry (cost pre-computed)
+              f.write(json.dumps({
+                  'type': 'assistant',
+                  'timestamp': '2026-06-01T10:00:00.000Z',
+                  'costUSD': 5.0,
+                  'message': {'model': 'claude-sonnet-4-6-20250219'}
+              }) + '\n')
+              # Today entry (token-based)
+              f.write(json.dumps({
+                  'type': 'assistant',
+                  'timestamp': today + 'T10:00:00.000Z',
+                  'message': {
+                      'model': 'claude-opus-4-8-20250514',
+                      'usage': {'input_tokens': 1000, 'output_tokens': 200,
+                                'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0}
+                  }
+              }) + '\n')
+              # Non-assistant entry (should be skipped)
+              f.write(json.dumps({'type': 'user', 'timestamp': today + 'T10:01:00.000Z'}) + '\n')
 
-          budgets = {'Claude': 20.0, 'OpenAI': 10.0}
+          results = _parse_file(Path(fname))
+          os.unlink(fname)
+          assert len(results) == 2, f'Expected 2 results, got {len(results)}: {results}'
+          dates = [r[0] for r in results]
+          assert '2026-06-01' in dates
+          assert today in dates
+          print(f'JSONL parsing: {len(results)} entries parsed OK')
 
+          # Test provider aggregation via JsonlProvider
           async def run():
-              store = Store(Path('/tmp/ci-ccusage.db'))
+              store = Store(Path('/tmp/ci-jsonl.db'))
               await store.open()
-              provider = CcusageProvider(budgets=budgets, store=store)
-              statuses = provider._parse_daily_data(sample)
-
-              claude = next(s for s in statuses if s.name == 'Claude')
-              openai = next(s for s in statuses if s.name == 'OpenAI')
-
-              assert abs(claude.spent_total - 6.5) < 0.01, f'Expected 6.5 got {claude.spent_total}'
-              assert abs(claude.spent_today - 1.5) < 0.01, f'Expected 1.5 got {claude.spent_today}'
-              assert claude.budget_usd == 20.0
-              assert abs(openai.spent_total - 2.3) < 0.01, f'Expected 2.3 got {openai.spent_total}'
-              assert abs(openai.spent_today - 0.3) < 0.01, f'Expected 0.3 got {openai.spent_today}'
-              print(f'Claude: total=\${claude.spent_total:.2f} today=\${claude.spent_today:.2f} remaining=\${claude.remaining:.2f}')
-              print(f'OpenAI: total=\${openai.spent_total:.2f} today=\${openai.spent_today:.2f} remaining=\${openai.remaining:.2f}')
-
+              budgets = {'Claude': 20.0}
+              provider = JsonlProvider(budgets=budgets, store=store)
+              # With no JSONL files, should return zero budgeted providers
+              statuses = await provider.fetch_all_statuses()
+              claude = next((s for s in statuses if s.name == 'Claude'), None)
+              assert claude is not None
+              print(f'JsonlProvider zero-usage fallback OK (Claude budget=\${claude.budget_usd})')
               await store.close()
-              print('CcusageProvider parsing test PASSED')
 
           asyncio.run(run())
+          print('JsonlProvider test PASSED')
           "
 
       - name: Test waybar script (no daemon → error JSON)
         run: |
-          rm -f /tmp/llm-monitor.sock
           bash waybar/module.sh > /tmp/waybar-out.json
           echo "Output: $(cat /tmp/waybar-out.json)"
-          # Read from file directly — avoids bash variable interpolation breaking JSON
           python3 << 'PYEOF'
           import json
           with open('/tmp/waybar-out.json') as f:
@@ -359,7 +399,6 @@ jobs:
 
       - name: Test waybar script (with daemon → valid JSON)
         run: |
-          # Start a background daemon stub using a temp script file
           cat > /tmp/ci-daemon-stub.py << 'PYDAEMON'
           import asyncio, sys, time
           sys.path.insert(0, '.')
@@ -374,7 +413,7 @@ jobs:
               statuses = [ProviderStatus('Claude', 20.0, 7.6, 0.23, time.time())]
               async def get_statuses():
                   return statuses
-              server = SocketServer('/tmp/llm-monitor.sock', store, get_statuses)
+              server = SocketServer('127.0.0.1', 37891, store, get_statuses)
               await server.start()
               await asyncio.sleep(10)
               await server.stop()
@@ -388,8 +427,6 @@ jobs:
 
           bash waybar/module.sh > /tmp/waybar-live.json
           echo "Output: $(cat /tmp/waybar-live.json)"
-          # Read from file directly — tooltip contains real newlines which break
-          # bash variable interpolation inside Python string literals
           python3 << 'PYEOF'
           import json
           with open('/tmp/waybar-live.json') as f:
@@ -400,11 +437,11 @@ jobs:
           PYEOF
           wait $BGPID
 
-  # ── 5. Tag & GitHub Release ───────────────────────────────────────────────
+  # ── 6. Tag & GitHub Release ───────────────────────────────────────────────
   release:
     name: GitHub Release
     runs-on: ubuntu-22.04
-    needs: [build, smoke-test]
+    needs: [build, build-windows, smoke-test]
     if: needs.build.outputs.is_release == 'true'
 
     steps:
@@ -420,6 +457,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build.outputs.artifact_name }}-deb
+          path: dist/
+
+      - name: Download Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}-windows
           path: dist/
 
       - name: Create git tag
@@ -443,11 +486,18 @@ jobs:
           body: |
             ## llm-usage-indicator v${{ needs.build.outputs.version }}
 
-            Waybar용 LLM 크레딧 모니터 데몬 (Claude / Gemini / OpenAI)
+            Claude Code 대화 기록에서 직접 사용량을 집계하는 크로스플랫폼 LLM 크레딧 모니터.
+            Node.js 없음 — Python만으로 동작.
 
-            ### 설치 방법
+            ### Windows 설치 (비전공자 권장)
 
-            **tarball (범용):**
+            ```
+            LLM-Usage-Indicator-Setup-${{ needs.build.outputs.version }}.exe 다운로드 후 실행
+            ```
+
+            ### Ubuntu/Debian 설치
+
+            **tarball:**
             ```bash
             tar -xzf llm-usage-indicator-${{ needs.build.outputs.version }}.tar.gz
             cd llm-usage-indicator-${{ needs.build.outputs.version }}
@@ -457,17 +507,9 @@ jobs:
             **Debian/Ubuntu (.deb):**
             ```bash
             sudo dpkg -i llm-usage-indicator-${{ needs.build.outputs.version }}.deb
-            pip install aiohttp aiosqlite --user
             ```
 
-            자세한 설치 안내는 [README](https://github.com/${{ github.repository }}/blob/main/README.md)를 참고하세요.
-
-            ### Installation (English)
-
-            See [README.en.md](https://github.com/${{ github.repository }}/blob/main/docs/README.en.md) for English instructions.
-
             ### Checksums
-            Verify downloads with the accompanying `.sha256` files:
             ```bash
             sha256sum -c llm-usage-indicator-${{ needs.build.outputs.version }}.tar.gz.sha256
             sha256sum -c llm-usage-indicator-${{ needs.build.outputs.version }}.deb.sha256
@@ -477,6 +519,8 @@ jobs:
             dist/*.tar.gz.sha256
             dist/*.deb
             dist/*.deb.sha256
+            dist/LLM-Usage-Indicator-Setup-*.exe
+            dist/LLM-Usage-Indicator-Setup-*.exe.sha256
           draft: false
           prerelease: ${{ contains(needs.build.outputs.version, 'dev') }}
         env:

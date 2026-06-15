@@ -1,50 +1,28 @@
-#!/usr/bin/env python3
 """
-GTK3 settings GUI for llm-usage-indicator.
+Cross-platform settings GUI for llm-usage-indicator.
 
-Reads and writes ~/.config/llm-usage-indicator/config.toml.
-Requires: python3-gi (PyGObject), gir1.2-gtk-3.0
+Uses tkinter (Python built-in) — no external GUI dependencies.
+Config file is written to the platform-appropriate user config directory.
+
+Linux   : ~/.config/llm-usage-indicator/config.toml
+Windows : %APPDATA%\\llm-usage-indicator\\config.toml
 """
 
 import subprocess
 import sys
-import os
+import tkinter as tk
 from pathlib import Path
-
-try:
-    import gi
-    gi.require_version("Gtk", "3.0")
-    from gi.repository import Gtk, Gdk, GLib
-except ImportError:
-    print(
-        "ERROR: python3-gi is required.\n"
-        "Install with: sudo apt install python3-gi gir1.2-gtk-3.0",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+from tkinter import messagebox, ttk
 
 if sys.version_info >= (3, 11):
     import tomllib
 else:
-    try:
-        import tomllib
-    except ImportError:
-        import tomli as tomllib  # type: ignore[no-redef]
+    import tomllib  # type: ignore[no-redef]
 
-CONFIG_PATH = Path.home() / ".config" / "llm-usage-indicator" / "config.toml"
+from platformdirs import user_config_dir
 
-DEFAULTS = {
-    "poll_interval": 60,
-    "socket_path": "/tmp/llm-monitor.sock",
-    "db_path": "~/.local/share/llm-usage-indicator/data.db",
-    "ccusage_cmd": "npx ccusage@latest",
-    "budgets": {
-        "claude": 20.0,
-        "gemini": 15.0,
-        "openai": 10.0,
-        "copilot": 0.0,
-    },
-}
+_APP = "llm-usage-indicator"
+CONFIG_PATH = Path(user_config_dir(_APP)) / "config.toml"
 
 PROVIDERS = [
     ("claude",  "Claude"),
@@ -53,6 +31,16 @@ PROVIDERS = [
     ("copilot", "Copilot"),
 ]
 
+DEFAULTS: dict = {
+    "poll_interval": 60,
+    "ipc_host": "127.0.0.1",
+    "ipc_port": 37891,
+    "db_path": "",
+    "budgets": {"claude": 20.0, "gemini": 15.0, "openai": 10.0, "copilot": 0.0},
+}
+
+
+# ── Config I/O ────────────────────────────────────────────────────────────────
 
 def _load_raw() -> dict:
     if CONFIG_PATH.exists():
@@ -69,9 +57,9 @@ def _write_toml(raw: dict) -> None:
     lines = [
         "[general]",
         f'poll_interval = {int(g.get("poll_interval", DEFAULTS["poll_interval"]))}',
-        f'socket_path   = "{g.get("socket_path", DEFAULTS["socket_path"])}"',
+        f'ipc_host      = "{g.get("ipc_host", DEFAULTS["ipc_host"])}"',
+        f'ipc_port      = {int(g.get("ipc_port", DEFAULTS["ipc_port"]))}',
         f'db_path       = "{g.get("db_path", DEFAULTS["db_path"])}"',
-        f'ccusage_cmd   = "{g.get("ccusage_cmd", DEFAULTS["ccusage_cmd"])}"',
         "",
         "# Monthly credit budgets per provider (USD).",
         "[budgets]",
@@ -80,181 +68,139 @@ def _write_toml(raw: dict) -> None:
         val = b.get(key, DEFAULTS["budgets"].get(key, 0.0))
         lines.append(f"{key:<8}= {float(val):.2f}")
 
-    CONFIG_PATH.write_text("\n".join(lines) + "\n")
-    CONFIG_PATH.chmod(0o600)
+    CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if sys.platform != "win32":
+        CONFIG_PATH.chmod(0o600)
 
 
 def _restart_daemon() -> tuple[bool, str]:
     try:
-        result = subprocess.run(
-            ["systemctl", "--user", "restart", "llm-usage-indicator"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            return True, "Daemon restarted successfully."
-        return False, result.stderr.strip() or "Failed to restart daemon."
-    except FileNotFoundError:
-        return False, "systemctl not found — restart the daemon manually."
+        if sys.platform == "win32":
+            cmds = [
+                ["sc", "stop", "llm-usage-indicator"],
+                ["sc", "start", "llm-usage-indicator"],
+            ]
+        else:
+            cmds = [["systemctl", "--user", "restart", "llm-usage-indicator"]]
+
+        for cmd in cmds:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode != 0 and "already" not in result.stderr.lower():
+                return False, result.stderr.strip() or f"Command failed: {' '.join(cmd)}"
+        return True, "Daemon restarted successfully."
+    except FileNotFoundError as e:
+        return False, f"Command not found: {e} — restart the daemon manually."
     except subprocess.TimeoutExpired:
         return False, "Restart timed out."
 
 
-class SettingsWindow(Gtk.Window):
-    def __init__(self) -> None:
-        super().__init__(title="LLM Usage Indicator — Settings")
-        self.set_border_width(16)
-        self.set_default_size(460, -1)
-        self.set_resizable(False)
-        self.connect("delete-event", Gtk.main_quit)
+# ── Settings window ───────────────────────────────────────────────────────────
 
+class SettingsWindow:
+    def __init__(self) -> None:
         self._raw = _load_raw()
+        self._root = tk.Tk()
+        self._root.title("LLM Usage Indicator — Settings")
+        self._root.resizable(False, False)
         self._build_ui()
 
-    # ── UI construction ───────────────────────────────────────────────────────
-
     def _build_ui(self) -> None:
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
-        self.add(outer)
-
-        outer.pack_start(self._build_general_section(), False, False, 0)
-        outer.pack_start(self._build_budget_section(), False, False, 0)
-        outer.pack_start(self._build_buttons(), False, False, 0)
-
-        self._status_bar = Gtk.Label(label="")
-        self._status_bar.set_xalign(0)
-        ctx = self._status_bar.get_style_context()
-        ctx.add_class("dim-label")
-        outer.pack_start(self._status_bar, False, False, 0)
-
-    def _section_label(self, text: str) -> Gtk.Label:
-        lbl = Gtk.Label()
-        lbl.set_markup(f"<b>{GLib.markup_escape_text(text)}</b>")
-        lbl.set_xalign(0)
-        return lbl
-
-    def _build_general_section(self) -> Gtk.Box:
+        pad = {"padx": 16, "pady": 8}
         g = self._raw.get("general", {})
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        box.pack_start(self._section_label("General"), False, False, 0)
-
-        grid = Gtk.Grid(column_spacing=12, row_spacing=8)
-        box.pack_start(grid, False, False, 0)
-
-        # Poll interval
-        lbl = Gtk.Label(label="Poll interval (seconds):", xalign=0)
-        self._poll_spin = Gtk.SpinButton.new_with_range(10, 3600, 10)
-        self._poll_spin.set_value(int(g.get("poll_interval", DEFAULTS["poll_interval"])))
-        self._poll_spin.set_tooltip_text("How often the daemon fetches usage data")
-        grid.attach(lbl, 0, 0, 1, 1)
-        grid.attach(self._poll_spin, 1, 0, 1, 1)
-
-        # ccusage command
-        lbl2 = Gtk.Label(label="ccusage command:", xalign=0)
-        self._ccusage_entry = Gtk.Entry()
-        self._ccusage_entry.set_text(g.get("ccusage_cmd", DEFAULTS["ccusage_cmd"]))
-        self._ccusage_entry.set_hexpand(True)
-        self._ccusage_entry.set_tooltip_text(
-            "Command used to invoke ccusage (requires Node.js 18+)"
-        )
-        grid.attach(lbl2, 0, 1, 1, 1)
-        grid.attach(self._ccusage_entry, 1, 1, 1, 1)
-
-        # Advanced: socket path + db path (collapsed by default)
-        expander = Gtk.Expander(label="Advanced paths")
-        adv_grid = Gtk.Grid(column_spacing=12, row_spacing=8, margin_top=6)
-        expander.add(adv_grid)
-
-        lbl3 = Gtk.Label(label="Socket path:", xalign=0)
-        self._socket_entry = Gtk.Entry()
-        self._socket_entry.set_text(g.get("socket_path", DEFAULTS["socket_path"]))
-        self._socket_entry.set_hexpand(True)
-        adv_grid.attach(lbl3, 0, 0, 1, 1)
-        adv_grid.attach(self._socket_entry, 1, 0, 1, 1)
-
-        lbl4 = Gtk.Label(label="Database path:", xalign=0)
-        self._db_entry = Gtk.Entry()
-        self._db_entry.set_text(g.get("db_path", DEFAULTS["db_path"]))
-        self._db_entry.set_hexpand(True)
-        adv_grid.attach(lbl4, 0, 1, 1, 1)
-        adv_grid.attach(self._db_entry, 1, 1, 1, 1)
-
-        box.pack_start(expander, False, False, 0)
-        return box
-
-    def _build_budget_section(self) -> Gtk.Box:
         b = self._raw.get("budgets", {})
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        box.pack_start(self._section_label("Monthly Budgets (USD)"), False, False, 0)
+        # ── General section ──
+        frm_gen = ttk.LabelFrame(self._root, text="General", padding=10)
+        frm_gen.pack(fill="x", **pad)
 
-        hint = Gtk.Label(
-            label="Set to 0 to hide a provider from the status bar.",
-            xalign=0,
+        ttk.Label(frm_gen, text="Poll interval (seconds):").grid(
+            row=0, column=0, sticky="w", pady=4
         )
-        hint.get_style_context().add_class("dim-label")
-        box.pack_start(hint, False, False, 0)
+        self._poll_var = tk.IntVar(value=int(g.get("poll_interval", DEFAULTS["poll_interval"])))
+        ttk.Spinbox(frm_gen, from_=10, to=3600, increment=10,
+                    textvariable=self._poll_var, width=8).grid(row=0, column=1, sticky="w")
 
-        grid = Gtk.Grid(column_spacing=12, row_spacing=8)
-        box.pack_start(grid, False, False, 0)
+        # Advanced paths (collapsed in an expander-like frame)
+        frm_adv = ttk.LabelFrame(self._root, text="Advanced", padding=10)
+        frm_adv.pack(fill="x", **pad)
 
-        self._budget_spins: dict[str, Gtk.SpinButton] = {}
-        for row, (key, label) in enumerate(PROVIDERS):
-            lbl = Gtk.Label(label=f"{label}:", xalign=0)
-            spin = Gtk.SpinButton.new_with_range(0.0, 10000.0, 1.0)
-            spin.set_digits(2)
+        ttk.Label(frm_adv, text="IPC host:").grid(row=0, column=0, sticky="w", pady=4)
+        self._host_var = tk.StringVar(value=g.get("ipc_host", DEFAULTS["ipc_host"]))
+        ttk.Entry(frm_adv, textvariable=self._host_var, width=20).grid(row=0, column=1, sticky="ew")
+
+        ttk.Label(frm_adv, text="IPC port:").grid(row=1, column=0, sticky="w", pady=4)
+        self._port_var = tk.IntVar(value=int(g.get("ipc_port", DEFAULTS["ipc_port"])))
+        ttk.Spinbox(frm_adv, from_=1024, to=65535, increment=1,
+                    textvariable=self._port_var, width=8).grid(row=1, column=1, sticky="w")
+
+        ttk.Label(frm_adv, text="Database path:").grid(row=2, column=0, sticky="w", pady=4)
+        self._db_var = tk.StringVar(value=g.get("db_path", DEFAULTS["db_path"]))
+        ttk.Entry(frm_adv, textvariable=self._db_var, width=40).grid(
+            row=2, column=1, sticky="ew"
+        )
+        ttk.Label(frm_adv, text="(empty = platform default)", foreground="gray").grid(
+            row=3, column=1, sticky="w"
+        )
+        frm_adv.columnconfigure(1, weight=1)
+
+        # ── Budget section ──
+        frm_bud = ttk.LabelFrame(self._root, text="Monthly Budgets (USD)", padding=10)
+        frm_bud.pack(fill="x", **pad)
+        ttk.Label(frm_bud, text="Set to 0 to hide a provider.", foreground="gray").grid(
+            row=0, column=0, columnspan=3, sticky="w"
+        )
+
+        self._budget_vars: dict[str, tk.DoubleVar] = {}
+        for row, (key, label) in enumerate(PROVIDERS, start=1):
+            ttk.Label(frm_bud, text="$").grid(row=row, column=0, sticky="e")
+            ttk.Label(frm_bud, text=f"{label}:").grid(row=row, column=1, sticky="w", padx=4)
             val = float(b.get(key, DEFAULTS["budgets"].get(key, 0.0)))
-            spin.set_value(val)
-            dollar = Gtk.Label(label="$", xalign=1)
-            grid.attach(dollar, 0, row, 1, 1)
-            grid.attach(lbl,   1, row, 1, 1)
-            grid.attach(spin,  2, row, 1, 1)
-            self._budget_spins[key] = spin
+            var = tk.DoubleVar(value=val)
+            self._budget_vars[key] = var
+            ttk.Spinbox(frm_bud, from_=0.0, to=10000.0, increment=1.0,
+                        textvariable=var, width=10, format="%.2f").grid(
+                row=row, column=2, sticky="w", pady=2
+            )
 
-        return box
+        # ── Status bar ──
+        self._status_var = tk.StringVar()
+        status_lbl = ttk.Label(self._root, textvariable=self._status_var, foreground="gray")
+        status_lbl.pack(fill="x", padx=16)
+        self._status_lbl = status_lbl
 
-    def _build_buttons(self) -> Gtk.Box:
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        box.set_halign(Gtk.Align.END)
+        # ── Buttons ──
+        frm_btn = ttk.Frame(self._root)
+        frm_btn.pack(fill="x", padx=16, pady=(4, 16))
 
-        btn_cancel = Gtk.Button(label="Cancel")
-        btn_cancel.connect("clicked", lambda _: Gtk.main_quit())
-
-        btn_save = Gtk.Button(label="Save")
-        btn_save.get_style_context().add_class("suggested-action")
-        btn_save.connect("clicked", self._on_save)
-
-        btn_save_restart = Gtk.Button(label="Save & Restart Daemon")
-        btn_save_restart.connect("clicked", self._on_save_restart)
-
-        box.pack_start(btn_cancel, False, False, 0)
-        box.pack_start(btn_save, False, False, 0)
-        box.pack_start(btn_save_restart, False, False, 0)
-        return box
+        ttk.Button(frm_btn, text="Cancel", command=self._root.destroy).pack(
+            side="right", padx=4
+        )
+        ttk.Button(frm_btn, text="Save & Restart",
+                   command=self._on_save_restart).pack(side="right", padx=4)
+        ttk.Button(frm_btn, text="Save", command=self._on_save).pack(
+            side="right", padx=4
+        )
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _collect(self) -> dict:
         return {
             "general": {
-                "poll_interval": int(self._poll_spin.get_value()),
-                "socket_path":   self._socket_entry.get_text().strip(),
-                "db_path":       self._db_entry.get_text().strip(),
-                "ccusage_cmd":   self._ccusage_entry.get_text().strip(),
+                "poll_interval": self._poll_var.get(),
+                "ipc_host":      self._host_var.get().strip(),
+                "ipc_port":      self._port_var.get(),
+                "db_path":       self._db_var.get().strip(),
             },
             "budgets": {
-                key: round(spin.get_value(), 2)
-                for key, spin in self._budget_spins.items()
+                key: round(var.get(), 2)
+                for key, var in self._budget_vars.items()
             },
         }
 
     def _save(self) -> bool:
         data = self._collect()
-        if not data["general"]["socket_path"]:
-            self._set_status("Socket path cannot be empty.", error=True)
-            return False
-        if not data["general"]["ccusage_cmd"]:
-            self._set_status("ccusage command cannot be empty.", error=True)
+        if not data["general"]["ipc_host"]:
+            self._set_status("IPC host cannot be empty.", error=True)
             return False
         try:
             _write_toml(data)
@@ -263,42 +209,27 @@ class SettingsWindow(Gtk.Window):
             self._set_status(f"Failed to write config: {e}", error=True)
             return False
 
-    def _on_save(self, _btn: Gtk.Button) -> None:
+    def _on_save(self) -> None:
         if self._save():
             self._set_status(f"Saved to {CONFIG_PATH}")
 
-    def _on_save_restart(self, _btn: Gtk.Button) -> None:
+    def _on_save_restart(self) -> None:
         if not self._save():
             return
         ok, msg = _restart_daemon()
         self._set_status(msg, error=not ok)
 
     def _set_status(self, msg: str, *, error: bool = False) -> None:
-        self._status_bar.set_text(msg)
-        ctx = self._status_bar.get_style_context()
-        ctx.remove_class("error")
-        if error:
-            ctx.add_class("error")
+        self._status_var.set(msg)
+        self._status_lbl.configure(foreground="red" if error else "gray")
 
-
-def _apply_css() -> None:
-    css = b"""
-    label.error { color: #e01b24; }
-    """
-    provider = Gtk.CssProvider()
-    provider.load_from_data(css)
-    Gtk.StyleContext.add_provider_for_screen(
-        Gdk.Screen.get_default(),
-        provider,
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-    )
+    def run(self) -> None:
+        self._root.mainloop()
 
 
 def main() -> None:
-    _apply_css()
     win = SettingsWindow()
-    win.show_all()
-    Gtk.main()
+    win.run()
 
 
 if __name__ == "__main__":

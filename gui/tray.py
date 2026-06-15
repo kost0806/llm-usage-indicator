@@ -1,62 +1,37 @@
-#!/usr/bin/env python3
 """
-System tray indicator for llm-usage-indicator.
+Cross-platform system tray indicator for llm-usage-indicator.
 
-On GNOME / Unity: uses AppIndicator3 to show text labels in the status bar.
-On X11 (KDE, XFCE, i3, etc.): falls back to Gtk.StatusIcon with a tooltip.
+Uses pystray (Windows: Win32 NotifyIcon, Linux: GTK StatusIcon,
+macOS: Cocoa) + Pillow for icon rendering.
 
 Required:
-  sudo apt install python3-gi gir1.2-gtk-3.0
-  # For GNOME text labels (optional):
-  sudo apt install gir1.2-appindicator3-0.1 gnome-shell-extension-appindicator
+  pip install pystray Pillow
 """
 
 import json
 import logging
-import os
 import signal
 import socket
-import subprocess
 import sys
 import threading
 from pathlib import Path
 
-try:
-    import gi
-    gi.require_version("Gtk", "3.0")
-    from gi.repository import Gtk, GLib
-except (ImportError, ValueError) as exc:
-    print(
-        f"ERROR: {exc}\n"
-        "Install with: sudo apt install python3-gi gir1.2-gtk-3.0",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+import pystray
+from PIL import Image, ImageDraw
 
-_HAVE_APPINDICATOR = False
-try:
-    gi.require_version("AppIndicator3", "0.1")
-    from gi.repository import AppIndicator3
-    _HAVE_APPINDICATOR = True
-except (ImportError, ValueError):
-    pass
-
-SOCKET_PATH = os.environ.get("LLM_MONITOR_SOCK", "/tmp/llm-monitor.sock")
-REFRESH_INTERVAL_MS = 30_000
+IPC_HOST = "127.0.0.1"
+IPC_PORT = 37891
+REFRESH_INTERVAL_S = 30.0
 SOCKET_TIMEOUT_S = 3
-_ICON = "utilities-system-monitor"
 
 logger = logging.getLogger(__name__)
 
 
-# ── Socket helper ─────────────────────────────────────────────────────────────
+# ── Daemon communication ──────────────────────────────────────────────────────
 
 def _fetch_status() -> dict | None:
-    """Query the daemon and return the parsed JSON dict, or None on error."""
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(SOCKET_TIMEOUT_S)
-            s.connect(SOCKET_PATH)
+        with socket.create_connection((IPC_HOST, IPC_PORT), timeout=SOCKET_TIMEOUT_S) as s:
             s.sendall(b'{"cmd":"status"}\n')
             buf = b""
             while True:
@@ -72,12 +47,71 @@ def _fetch_status() -> dict | None:
         return None
 
 
-# ── Shared helpers ────────────────────────────────────────────────────────────
+# ── Icon rendering ────────────────────────────────────────────────────────────
 
-def _bar_label(providers: list[dict]) -> tuple[str, str]:
-    """Return (label, guide) for AppIndicator3 status bar text."""
+def _make_icon(warning: bool = False, error: bool = False) -> Image.Image:
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    if error:
+        body = (180, 60, 60, 255)
+    elif warning:
+        body = (200, 140, 40, 255)
+    else:
+        body = (60, 160, 90, 255)
+    # Robot head
+    draw.rounded_rectangle([6, 8, 58, 52], radius=8, fill=body)
+    # Eyes
+    draw.ellipse([16, 18, 28, 30], fill=(220, 240, 220))
+    draw.ellipse([36, 18, 48, 30], fill=(220, 240, 220))
+    draw.ellipse([19, 21, 25, 27], fill=(20, 20, 20))
+    draw.ellipse([39, 21, 45, 27], fill=(20, 20, 20))
+    # Mouth
+    draw.arc([18, 34, 46, 50], start=10, end=170, fill=(220, 240, 220), width=3)
+    # Antenna
+    draw.line([32, 8, 32, 2], fill=body, width=3)
+    draw.ellipse([29, 0, 35, 6], fill=body)
+    return img
+
+
+# ── Menu construction ─────────────────────────────────────────────────────────
+
+def _build_menu(data: dict | None, on_refresh, on_settings, on_quit) -> pystray.Menu:
+    items: list = []
+    providers = (data or {}).get("providers", [])
+
+    if providers:
+        for p in providers:
+            if p["budget_usd"] > 0:
+                label = (
+                    f"{p['name']}: ${p['remaining']:.2f} remaining"
+                    f" ({p['remaining_pct']:.0f}%)  ↑${p['spent_today']:.4f} today"
+                )
+            else:
+                label = f"{p['name']}: ↑${p['spent_today']:.4f} today (no budget)"
+            items.append(pystray.MenuItem(label, None, enabled=False))
+
+        items.append(pystray.Menu.SEPARATOR)
+        total_r = data.get("total_remaining", 0.0)
+        total_t = data.get("total_spent_today", 0.0)
+        items.append(pystray.MenuItem(
+            f"Total: ${total_r:.2f} remaining  ↑${total_t:.4f} today",
+            None, enabled=False,
+        ))
+    else:
+        items.append(pystray.MenuItem("Daemon not running", None, enabled=False))
+
+    items.append(pystray.Menu.SEPARATOR)
+    items.append(pystray.MenuItem("Settings…", on_settings))
+    items.append(pystray.MenuItem("Refresh now", on_refresh))
+    items.append(pystray.Menu.SEPARATOR)
+    items.append(pystray.MenuItem("Quit", on_quit))
+
+    return pystray.Menu(*items)
+
+
+def _icon_title(providers: list[dict]) -> str:
     if not providers:
-        return "🤖 --", "🤖 --"
+        return "LLM Usage Indicator — daemon not running"
     parts = []
     for p in providers:
         initial = p["name"][0]
@@ -85,171 +119,79 @@ def _bar_label(providers: list[dict]) -> tuple[str, str]:
             parts.append(f"{initial}:${p['remaining']:.2f}")
         else:
             parts.append(f"{initial}:↑${p['spent_today']:.2f}")
-    label = "🤖 " + "  ".join(parts)
-    guide = "🤖 " + "  ".join(["X:$000.00"] * len(parts))
-    return label, guide
+    return "\U0001f916 " + "  ".join(parts)
 
 
-def _tooltip(providers: list[dict]) -> str:
-    """Return tooltip text for StatusIcon (X11 fallback)."""
-    if not providers:
-        return "LLM Usage Indicator — daemon not running"
-    lines = ["LLM Usage Indicator"]
-    for p in providers:
-        if p["budget_usd"] > 0:
-            lines.append(
-                f"  {p['name']}: ${p['remaining']:.2f} remaining"
-                f" ({p['remaining_pct']:.0f}%)  ↑ ${p['spent_today']:.4f} today"
-            )
-        else:
-            lines.append(f"  {p['name']}: ${p['spent_today']:.4f} today (no budget)")
-    return "\n".join(lines)
+# ── Settings launcher ─────────────────────────────────────────────────────────
 
-
-def _open_settings(_item=None) -> None:
-    settings_bin = Path.home() / ".local" / "bin" / "llm-usage-indicator-settings"
-    if settings_bin.exists():
-        subprocess.Popen([str(settings_bin)])
+def _open_settings() -> None:
+    import subprocess
+    if sys.platform == "win32":
+        exe_dir = Path(sys.executable).parent
+        settings_exe = exe_dir / "llm-monitor-settings.exe"
+        if settings_exe.exists():
+            subprocess.Popen([str(settings_exe)])
+            return
     else:
-        subprocess.Popen([sys.executable, "-m", "llm_usage_indicator.settings_gui"])
+        settings_bin = Path.home() / ".local" / "bin" / "llm-usage-indicator-settings"
+        if settings_bin.exists():
+            subprocess.Popen([str(settings_bin)])
+            return
+    # Fallback: run settings module directly
+    subprocess.Popen([sys.executable, "-m", "gui.settings"])
 
 
-def _build_menu(data: dict | None, on_refresh) -> Gtk.Menu:
-    menu = Gtk.Menu()
-    providers = (data or {}).get("providers", [])
+# ── Tray application ──────────────────────────────────────────────────────────
 
-    if providers:
-        for p in providers:
-            if p["budget_usd"] > 0:
-                line = (
-                    f"{p['name']}: ${p['remaining']:.2f} remaining"
-                    f" ({p['remaining_pct']:.0f}%)  ↑ ${p['spent_today']:.4f} today"
-                )
-            else:
-                line = f"{p['name']}: ${p['spent_today']:.4f} today (no budget)"
-            item = Gtk.MenuItem(label=line)
-            item.set_sensitive(False)
-            menu.append(item)
-        menu.append(Gtk.SeparatorMenuItem())
-    else:
-        no_daemon = Gtk.MenuItem(label="Daemon not running")
-        no_daemon.set_sensitive(False)
-        menu.append(no_daemon)
-        menu.append(Gtk.SeparatorMenuItem())
-
-    item_settings = Gtk.MenuItem(label="Settings…")
-    item_settings.connect("activate", _open_settings)
-    menu.append(item_settings)
-
-    item_refresh = Gtk.MenuItem(label="Refresh now")
-    item_refresh.connect("activate", lambda _: on_refresh())
-    menu.append(item_refresh)
-
-    menu.append(Gtk.SeparatorMenuItem())
-
-    item_quit = Gtk.MenuItem(label="Quit")
-    item_quit.connect("activate", lambda _: Gtk.main_quit())
-    menu.append(item_quit)
-
-    menu.show_all()
-    return menu
-
-
-# ── AppIndicator3 implementation (GNOME / Unity) ──────────────────────────────
-
-class AppIndicatorImpl:
-    """Uses AppIndicator3 to show live cost text in the GNOME status bar."""
-
+class TrayApp:
     def __init__(self) -> None:
-        self._ind = AppIndicator3.Indicator.new(
-            "llm-usage-indicator",
-            _ICON,
-            AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
-        )
-        self._ind.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-        self._ind.set_label("🤖 --", "🤖 C:$00.00 G:$00.00")
-        self._set_menu(None)
-        self._refresh()
-        GLib.timeout_add(REFRESH_INTERVAL_MS, self._on_timer)
-
-    def _set_menu(self, data: dict | None) -> None:
-        self._ind.set_menu(_build_menu(data, self._refresh))
-
-    def _refresh(self) -> None:
-        threading.Thread(target=self._fetch_and_apply, daemon=True).start()
-
-    def _fetch_and_apply(self) -> None:
-        GLib.idle_add(self._apply, _fetch_status())
-
-    def _apply(self, data: dict | None) -> bool:
-        providers = (data or {}).get("providers", [])
-        label, guide = _bar_label(providers)
-        self._ind.set_label(label, guide)
-        self._set_menu(data)
-        return False
-
-    def _on_timer(self) -> bool:
-        self._refresh()
-        return True
-
-
-# ── Gtk.StatusIcon fallback (X11 with system tray) ────────────────────────────
-
-class StatusIconImpl:
-    """
-    Gtk.StatusIcon for X11 environments that don't support AppIndicator3
-    (KDE, XFCE, MATE, i3+trayer, etc.).
-
-    Shows current costs in the hover tooltip; right-click opens the menu.
-    """
-
-    def __init__(self) -> None:
-        self._icon = Gtk.StatusIcon()
-        self._icon.set_from_icon_name(_ICON)
-        self._icon.set_tooltip_text("LLM Usage Indicator — loading…")
-        self._icon.set_visible(True)
-        self._icon.connect("popup-menu", self._on_popup)
         self._data: dict | None = None
-        self._refresh()
-        GLib.timeout_add(REFRESH_INTERVAL_MS, self._on_timer)
+        self._timer: threading.Timer | None = None
+        self._icon = pystray.Icon(
+            "llm-usage-indicator",
+            _make_icon(),
+            "LLM Usage Indicator",
+            menu=self._make_menu(),
+        )
+
+    def _make_menu(self) -> pystray.Menu:
+        return _build_menu(
+            self._data,
+            on_refresh=lambda: self._refresh(),
+            on_settings=lambda: _open_settings(),
+            on_quit=lambda: self._quit(),
+        )
 
     def _refresh(self) -> None:
-        threading.Thread(target=self._fetch_and_apply, daemon=True).start()
+        threading.Thread(target=self._fetch_and_update, daemon=True).start()
 
-    def _fetch_and_apply(self) -> None:
-        GLib.idle_add(self._apply, _fetch_status())
-
-    def _apply(self, data: dict | None) -> bool:
+    def _fetch_and_update(self) -> None:
+        data = _fetch_status()
         self._data = data
         providers = (data or {}).get("providers", [])
-        self._icon.set_tooltip_text(_tooltip(providers))
-        return False
 
-    def _on_timer(self) -> bool:
-        self._refresh()
-        return True
-
-    def _on_popup(self, icon, button, activate_time) -> None:
-        menu = _build_menu(self._data, self._refresh)
-        menu.popup(
-            None, None,
-            Gtk.StatusIcon.position_menu,
-            icon, button, activate_time,
+        warning = any(
+            p["remaining_pct"] < 20 and p["budget_usd"] > 0
+            for p in providers
         )
+        error = data is None
 
+        self._icon.icon = _make_icon(warning=warning, error=error)
+        self._icon.title = _icon_title(providers)
+        self._icon.menu = self._make_menu()
 
-# ── Backend selection ─────────────────────────────────────────────────────────
+        self._timer = threading.Timer(REFRESH_INTERVAL_S, self._refresh)
+        self._timer.daemon = True
+        self._timer.start()
 
-def _use_appindicator() -> bool:
-    """
-    True when AppIndicator3 is available AND we're running in a desktop that
-    supports it natively (GNOME with appindicator extension, or Unity).
-    For all other X11 desktops we use Gtk.StatusIcon instead.
-    """
-    if not _HAVE_APPINDICATOR:
-        return False
-    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
-    return any(name in desktop for name in ("GNOME", "UNITY"))
+    def _quit(self) -> None:
+        if self._timer:
+            self._timer.cancel()
+        self._icon.stop()
+
+    def run(self) -> None:
+        self._refresh()
+        self._icon.run()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -257,14 +199,8 @@ def _use_appindicator() -> bool:
 def main() -> None:
     logging.basicConfig(level=logging.WARNING)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-
-    if _use_appindicator():
-        AppIndicatorImpl()
-    else:
-        # X11 fallback: works on KDE, XFCE, MATE, i3+trayer, etc.
-        StatusIconImpl()
-
-    Gtk.main()
+    app = TrayApp()
+    app.run()
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
-aiohttp>=3.9.0
 aiosqlite>=0.19.0
 tomllib>=2.0.0; python_version < "3.11"
+platformdirs>=4.0.0
+pystray>=0.19.4
+Pillow>=10.0.0

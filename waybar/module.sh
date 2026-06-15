@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Waybar custom/script module for llm-usage-indicator.
-# Connects to the daemon's Unix socket and formats provider status as JSON.
+# Connects to the daemon's TCP server and formats provider status as JSON.
 #
 # Usage (normal):  called by Waybar every `interval` seconds
 #         --detail: emit plain-text detail for notify-send
 
-SOCKET_PATH="${LLM_MONITOR_SOCK:-/tmp/llm-monitor.sock}"
+IPC_HOST="${LLM_MONITOR_HOST:-127.0.0.1}"
+IPC_PORT="${LLM_MONITOR_PORT:-37891}"
 TIMEOUT=3
 TMPFILE=$(mktemp /tmp/llm-monitor-XXXXXX.json)
 trap 'rm -f "$TMPFILE"' EXIT
@@ -15,13 +16,11 @@ error_output() {
     exit 0
 }
 
-# Query daemon using Python unix socket (no socat dependency)
+# Query daemon via TCP
 python3 -c "
 import socket, sys
 try:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout($TIMEOUT)
-        s.connect('$SOCKET_PATH')
+    with socket.create_connection(('$IPC_HOST', int('$IPC_PORT')), timeout=$TIMEOUT) as s:
         s.sendall(b'{\"cmd\":\"status\"}\n')
         buf = b''
         while True:
