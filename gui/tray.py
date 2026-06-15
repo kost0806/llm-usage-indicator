@@ -10,6 +10,7 @@ Required:
 
 import json
 import logging
+import math
 import signal
 import socket
 import sys
@@ -49,7 +50,124 @@ def _fetch_status() -> dict | None:
 
 # ── Icon rendering ────────────────────────────────────────────────────────────
 
-def _make_icon(warning: bool = False, error: bool = False) -> Image.Image:
+# Brand colors and emoji per provider
+PROVIDER_BRAND: dict[str, dict] = {
+    "Claude":  {"bg": (209, 90,  42),  "ring": (232, 130, 80)},   # Anthropic orange
+    "OpenAI":  {"bg": (16,  163, 127), "ring": (80,  200, 160)},  # OpenAI green
+    "Gemini":  {"bg": (66,  133, 244), "ring": (130, 170, 255)},  # Google blue
+    "Copilot": {"bg": (0,   120, 212), "ring": (80,  170, 240)},  # Microsoft blue
+    "Other":   {"bg": (100, 100, 100), "ring": (160, 160, 160)},
+}
+
+PROVIDER_EMOJI: dict[str, str] = {
+    "Claude":  "🟠",
+    "OpenAI":  "🟢",
+    "Gemini":  "🔵",
+    "Copilot": "🟦",
+    "Other":   "⚪",
+}
+
+
+def _logo_claude(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: tuple) -> None:
+    """Anthropic asterisk: 6 thick lines radiating from center."""
+    w = max(2, r // 4)
+    for i in range(6):
+        angle = math.radians(i * 60 - 90)
+        x1 = cx + (r * 0.28) * math.cos(angle)
+        y1 = cy + (r * 0.28) * math.sin(angle)
+        x2 = cx + r * math.cos(angle)
+        y2 = cy + r * math.sin(angle)
+        draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+
+
+def _logo_openai(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: tuple) -> None:
+    """OpenAI gear-ring: outer ring + 6 small nodes + center dot."""
+    w = max(2, r // 5)
+    draw.arc([cx - r, cy - r, cx + r, cy + r], 0, 360, fill=color, width=w)
+    nr = max(2, r // 6)
+    for i in range(6):
+        angle = math.radians(i * 60)
+        mx = int(cx + r * math.cos(angle))
+        my = int(cy + r * math.sin(angle))
+        draw.ellipse([mx - nr, my - nr, mx + nr, my + nr], fill=color)
+    cr = max(2, r // 5)
+    draw.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=color)
+
+
+def _logo_gemini(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: tuple) -> None:
+    """Gemini 4-pointed star."""
+    points = []
+    for i in range(8):
+        angle = math.radians(i * 45 - 90)
+        radius = r if i % 2 == 0 else r * 0.28
+        points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    draw.polygon(points, fill=color)
+
+
+def _logo_copilot(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, _color: tuple) -> None:
+    """Microsoft Copilot: 2×2 colored squares."""
+    colors = [(243, 59, 86), (255, 185, 0), (0, 183, 154), (0, 120, 212)]
+    s = max(3, r // 2 - 1)
+    gap = max(1, r // 8)
+    positions = [
+        (cx - s - gap, cy - s - gap),
+        (cx + gap,     cy - s - gap),
+        (cx - s - gap, cy + gap),
+        (cx + gap,     cy + gap),
+    ]
+    for (px, py), c in zip(positions, colors):
+        draw.rounded_rectangle([px, py, px + s, py + s], radius=max(1, s // 4), fill=c)
+
+
+_LOGO_FN = {
+    "Claude":  _logo_claude,
+    "OpenAI":  _logo_openai,
+    "Gemini":  _logo_gemini,
+    "Copilot": _logo_copilot,
+}
+
+
+def _single_provider_icon(name: str, warning: bool, error: bool) -> Image.Image:
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    brand = PROVIDER_BRAND.get(name, PROVIDER_BRAND["Other"])
+
+    if error:
+        ring = (180, 60, 60)
+    elif warning:
+        ring = (220, 160, 30)
+    else:
+        ring = brand["ring"]
+
+    # Filled circle background
+    draw.ellipse([3, 3, 61, 61], fill=brand["bg"] + (255,))
+    # Status ring
+    draw.arc([1, 1, 63, 63], 0, 360, fill=ring + (255,), width=3)
+
+    logo_fn = _LOGO_FN.get(name)
+    if logo_fn:
+        logo_fn(draw, 32, 32, 19, (255, 255, 255))
+    else:
+        # Generic: circle outline
+        draw.arc([13, 13, 51, 51], 0, 360, fill=(255, 255, 255), width=3)
+
+    return img
+
+
+def _small_provider_badge(name: str, size: int) -> Image.Image:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    brand = PROVIDER_BRAND.get(name, PROVIDER_BRAND["Other"])
+    cx = cy = size // 2
+    r = cx - 2
+    draw.ellipse([2, 2, size - 3, size - 3], fill=brand["bg"] + (255,))
+    logo_fn = _LOGO_FN.get(name)
+    if logo_fn:
+        logo_fn(draw, cx, cy, max(3, r - 3), (255, 255, 255))
+    return img
+
+
+def _make_robot_icon(warning: bool = False, error: bool = False) -> Image.Image:
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     if error:
@@ -58,18 +176,46 @@ def _make_icon(warning: bool = False, error: bool = False) -> Image.Image:
         body = (200, 140, 40, 255)
     else:
         body = (60, 160, 90, 255)
-    # Robot head
     draw.rounded_rectangle([6, 8, 58, 52], radius=8, fill=body)
-    # Eyes
     draw.ellipse([16, 18, 28, 30], fill=(220, 240, 220))
     draw.ellipse([36, 18, 48, 30], fill=(220, 240, 220))
     draw.ellipse([19, 21, 25, 27], fill=(20, 20, 20))
     draw.ellipse([39, 21, 45, 27], fill=(20, 20, 20))
-    # Mouth
     draw.arc([18, 34, 46, 50], start=10, end=170, fill=(220, 240, 220), width=3)
-    # Antenna
     draw.line([32, 8, 32, 2], fill=body, width=3)
     draw.ellipse([29, 0, 35, 6], fill=body)
+    return img
+
+
+def _make_icon(
+    warning: bool = False,
+    error: bool = False,
+    providers: list[dict] | None = None,
+) -> Image.Image:
+    budgeted = [p for p in (providers or []) if p.get("budget_usd", 0) > 0]
+
+    if error or not budgeted:
+        return _make_robot_icon(warning=warning, error=error)
+
+    if len(budgeted) == 1:
+        return _single_provider_icon(budgeted[0]["name"], warning, error)
+
+    # Multiple providers: tile small badges
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    shown = budgeted[:4]
+    count = len(shown)
+
+    if count == 2:
+        badge_size, positions = 28, [(2, 18), (34, 18)]
+    elif count == 3:
+        badge_size, positions = 20, [(2, 22), (22, 2), (42, 22)]
+    else:
+        badge_size, positions = 28, [(2, 2), (34, 2), (2, 34), (34, 34)]
+
+    for p, pos in zip(shown, positions):
+        badge = _small_provider_badge(p["name"], badge_size)
+        img.paste(badge, pos, badge)
+
     return img
 
 
@@ -79,22 +225,21 @@ def _build_menu(data: dict | None, on_refresh, on_settings, on_quit) -> pystray.
     items: list = []
     providers = (data or {}).get("providers", [])
 
-    if providers:
-        for p in providers:
-            if p["budget_usd"] > 0:
-                label = (
-                    f"{p['name']}: ${p['remaining']:.2f} remaining"
-                    f" ({p['remaining_pct']:.0f}%)  ↑${p['spent_today']:.4f} today"
-                )
-            else:
-                label = f"{p['name']}: ↑${p['spent_today']:.4f} today (no budget)"
+    budgeted = [p for p in providers if p["budget_usd"] > 0]
+
+    if budgeted:
+        for p in budgeted:
+            label = (
+                f"{p['name']}: ↑${p['spent_today']:.4f} / ${p['remaining']:.2f}"
+                f" ({p['remaining_pct']:.0f}%)"
+            )
             items.append(pystray.MenuItem(label, None, enabled=False))
 
         items.append(pystray.Menu.SEPARATOR)
-        total_r = data.get("total_remaining", 0.0)
-        total_t = data.get("total_spent_today", 0.0)
+        total_r = sum(p["remaining"] for p in budgeted)
+        total_t = sum(p["spent_today"] for p in budgeted)
         items.append(pystray.MenuItem(
-            f"Total: ${total_r:.2f} remaining  ↑${total_t:.4f} today",
+            f"Total: ↑${total_t:.4f} / ${total_r:.2f} remaining",
             None, enabled=False,
         ))
     else:
@@ -110,16 +255,14 @@ def _build_menu(data: dict | None, on_refresh, on_settings, on_quit) -> pystray.
 
 
 def _icon_title(providers: list[dict]) -> str:
-    if not providers:
+    budgeted = [p for p in providers if p["budget_usd"] > 0]
+    if not budgeted:
         return "LLM Usage Indicator — daemon not running"
-    parts = []
-    for p in providers:
-        initial = p["name"][0]
-        if p["budget_usd"] > 0:
-            parts.append(f"{initial}:${p['remaining']:.2f}")
-        else:
-            parts.append(f"{initial}:↑${p['spent_today']:.2f}")
-    return "\U0001f916 " + "  ".join(parts)
+    parts = [
+        f"{PROVIDER_EMOJI.get(p['name'], '⚙')} {p['name']}: ↑${p['spent_today']:.2f}/${p['remaining']:.2f}"
+        for p in budgeted
+    ]
+    return "\n".join(parts)
 
 
 # ── Settings launcher ─────────────────────────────────────────────────────────
@@ -176,7 +319,7 @@ class TrayApp:
         )
         error = data is None
 
-        self._icon.icon = _make_icon(warning=warning, error=error)
+        self._icon.icon = _make_icon(warning=warning, error=error, providers=providers)
         self._icon.title = _icon_title(providers)
         self._icon.menu = self._make_menu()
 
