@@ -19,7 +19,7 @@
 !endif
 
 Name "${APP_NAME} ${VERSION}"
-OutFile "LLM-Usage-Indicator-Setup-${VERSION}.exe"
+OutFile "..\LLM-Usage-Indicator-Setup-${VERSION}.exe"
 Unicode True
 
 ; Per-user install — no UAC elevation needed
