@@ -12,6 +12,16 @@ on:
         type: string
         required: false
         default: 'false'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '버전 문자열 (비워두면 dev 버전 자동 생성)'
+        required: false
+        default: ''
+      is_release:
+        description: 'GitHub Release 생성 여부'
+        required: false
+        default: 'false'
   pull_request:
     branches: [main]
 
