@@ -219,7 +219,7 @@ jobs:
         run: pip install -r requirements.txt pyinstaller
 
       - name: Build executables (PyInstaller)
-        run: pyinstaller windows/build.spec --distpath dist-win --workpath build-win
+        run: pyinstaller windows/build.spec --distpath dist --workpath build-win
 
       - name: Install NSIS
         run: choco install nsis --no-progress -y
