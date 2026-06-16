@@ -1,13 +1,14 @@
 name: Release
 
 on:
-  push:
-    tags: ['v[0-9]*.[0-9]*.[0-9]*']
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version string (e.g. 1.2.3)'
+      bump_type:
+        description: 'Version bump type'
         required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: write
@@ -17,7 +18,7 @@ env:
 
 jobs:
   release:
-    name: Build & publish release
+    name: Bump ${{ inputs.bump_type }} & publish release
     runs-on: ubuntu-22.04
 
     steps:
@@ -25,18 +26,30 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ── Resolve version from tag or workflow_dispatch input ──────────────
-      - name: Resolve version
+      # ── Compute next version from latest git tag ─────────────────────────
+      - name: Compute next version
         id: ver
         run: |
-          if [[ -n "${{ inputs.version }}" ]]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION="${GITHUB_REF_NAME#v}"
-          fi
-          echo "version=${VERSION}"     >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}"        >> "$GITHUB_OUTPUT"
-          echo "artifact=llm-usage-indicator-${VERSION}" >> "$GITHUB_OUTPUT"
+          LATEST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          [[ -z "$LATEST" ]] && LATEST="v0.0.0"
+
+          MAJOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f1)
+          MINOR=$(echo "$LATEST" | cut -d. -f2)
+          PATCH=$(echo "$LATEST" | cut -d. -f3)
+
+          case "${{ inputs.bump_type }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0        ;;
+            patch) PATCH=$((PATCH + 1))                 ;;
+          esac
+
+          VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          TAG="v${VERSION}"
+          echo "${LATEST} → ${TAG}"
+
+          echo "version=${VERSION}"                          >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}"                                  >> "$GITHUB_OUTPUT"
+          echo "artifact=llm-usage-indicator-${VERSION}"    >> "$GITHUB_OUTPUT"
 
       # ── Inject version into install scripts ─────────────────────────────
       - name: Stage install scripts with version injected
@@ -45,8 +58,6 @@ jobs:
           mkdir -p dist/staged
           cp install.sh install.ps1 dist/staged/
 
-          # Replace the @RELEASE_VERSION@ placeholder in both scripts.
-          # Using Python avoids shell-escaping issues with $ in the PS1 file.
           python3 - "$VER" << 'PYEOF'
           import sys
           ver = sys.argv[1]
@@ -86,20 +97,15 @@ jobs:
           sha256sum "${ARTIFACT}.tar.gz" > "${ARTIFACT}.tar.gz.sha256"
           echo "Tarball: $(du -sh "${ARTIFACT}.tar.gz" | cut -f1)"
 
-      # ── Create git tag when triggered via workflow_dispatch ──────────────
+      # ── Create and push git tag ───────────────────────────────────────────
       - name: Create git tag
-        if: github.event_name == 'workflow_dispatch'
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists — skipping."
-          else
-            git tag "$TAG"
-            git push origin "$TAG"
-            echo "Created tag: $TAG"
-          fi
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Created tag: $TAG"
 
       # ── Publish GitHub Release ────────────────────────────────────────────
       - name: Create GitHub Release
