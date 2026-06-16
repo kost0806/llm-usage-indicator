@@ -208,12 +208,12 @@ _C_ON_SURF_VAR = "#49454F"   # On Surface Variant
 _C_ERROR       = "#B3261E"   # Error
 _C_ERR_CONT    = "#F9DEDC"   # Error Container
 
-# Provider brand colors  (fg, card-bg)
-_BRAND: dict[str, tuple[str, str]] = {
-    "Claude": ("#D15A2A", "#FFF0E8"),
-    "OpenAI": ("#10A37F", "#E8F5F0"),
-    "Gemini": ("#4285F4", "#E8F0FE"),
-    "Other":  (_C_OUTLINE, _C_CONT),
+# Brand accent color per provider — used only for the dot (●)
+_BRAND: dict[str, str] = {
+    "Claude": "#D15A2A",
+    "OpenAI": "#10A37F",
+    "Gemini": "#4285F4",
+    "Other":  _C_OUTLINE,
 }
 
 _FF = (
@@ -336,7 +336,7 @@ class TrayPopup:
         pct       = p["remaining_pct"]
         budget    = p.get("budget_usd", 0)
 
-        brand_fg, brand_card = _BRAND.get(name, _BRAND["Other"])
+        brand_color = _BRAND.get(name, _BRAND["Other"])
         low = pct < 20 and budget > 0
         bar_color = _C_ERROR if low else _C_PRIMARY
         pct_color = _C_ERROR if low else _C_ON_SURF_VAR
@@ -345,34 +345,34 @@ class TrayPopup:
         wrap = tk.Frame(self._content, bg=_C_BG)
         wrap.pack(fill="x", padx=12, pady=(10, 0))
 
-        card = tk.Frame(wrap, bg=brand_card, padx=14, pady=12)
+        card = tk.Frame(wrap, bg=_C_CONT, padx=14, pady=12)
         card.pack(fill="x")
 
-        # Provider name
-        name_row = tk.Frame(card, bg=brand_card)
+        # Provider name — only the dot uses the brand color
+        name_row = tk.Frame(card, bg=_C_CONT)
         name_row.pack(fill="x", pady=(0, 8))
         tk.Label(
             name_row, text="●",
-            font=(_FF, 16), bg=brand_card, fg=brand_fg,
+            font=(_FF, 16), bg=_C_CONT, fg=brand_color,
         ).pack(side="left", padx=(0, 6))
         tk.Label(
             name_row, text=name.upper(),
-            font=_F_BOLD, bg=brand_card, fg=_C_ON_SURF,
+            font=_F_BOLD, bg=_C_CONT, fg=_C_ON_SURF,
         ).pack(side="left")
 
         # Stat rows: label on left, amount on right
         def stat(label: str, amount: float, bold: bool = False) -> None:
-            row = tk.Frame(card, bg=brand_card)
+            row = tk.Frame(card, bg=_C_CONT)
             row.pack(fill="x", pady=1)
             tk.Label(
                 row, text=label, font=_F,
-                bg=brand_card, fg=_C_ON_SURF_VAR,
+                bg=_C_CONT, fg=_C_ON_SURF_VAR,
                 width=13, anchor="w",
             ).pack(side="left")
             tk.Label(
                 row, text=f"${amount:>8.2f}",
                 font=_F_BOLD if bold else _F,
-                bg=brand_card, fg=_C_ON_SURF,
+                bg=_C_CONT, fg=_C_ON_SURF,
             ).pack(side="right")
 
         stat("Today", today)
@@ -401,11 +401,11 @@ class TrayPopup:
         canvas.after(80, _draw)
 
         # Pct label
-        pct_row = tk.Frame(card, bg=brand_card)
+        pct_row = tk.Frame(card, bg=_C_CONT)
         pct_row.pack(fill="x")
         tk.Label(
             pct_row, text=f"{pct:.0f}% remaining",
-            font=_F_SM, bg=brand_card, fg=pct_color,
+            font=_F_SM, bg=_C_CONT, fg=pct_color,
         ).pack(side="right")
 
     # ── Summary footer ────────────────────────────────────────────────────────
