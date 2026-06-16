@@ -55,7 +55,6 @@ PROVIDER_BRAND: dict[str, dict] = {
     "Claude":  {"bg": (209, 90,  42),  "ring": (232, 130, 80)},   # Anthropic orange
     "OpenAI":  {"bg": (16,  163, 127), "ring": (80,  200, 160)},  # OpenAI green
     "Gemini":  {"bg": (66,  133, 244), "ring": (130, 170, 255)},  # Google blue
-    "Copilot": {"bg": (0,   120, 212), "ring": (80,  170, 240)},  # Microsoft blue
     "Other":   {"bg": (100, 100, 100), "ring": (160, 160, 160)},
 }
 
@@ -63,7 +62,6 @@ PROVIDER_EMOJI: dict[str, str] = {
     "Claude":  "🟠",
     "OpenAI":  "🟢",
     "Gemini":  "🔵",
-    "Copilot": "🟦",
     "Other":   "⚪",
 }
 
@@ -104,26 +102,10 @@ def _logo_gemini(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: tup
     draw.polygon(points, fill=color)
 
 
-def _logo_copilot(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, _color: tuple) -> None:
-    """Microsoft Copilot: 2×2 colored squares."""
-    colors = [(243, 59, 86), (255, 185, 0), (0, 183, 154), (0, 120, 212)]
-    s = max(3, r // 2 - 1)
-    gap = max(1, r // 8)
-    positions = [
-        (cx - s - gap, cy - s - gap),
-        (cx + gap,     cy - s - gap),
-        (cx - s - gap, cy + gap),
-        (cx + gap,     cy + gap),
-    ]
-    for (px, py), c in zip(positions, colors):
-        draw.rounded_rectangle([px, py, px + s, py + s], radius=max(1, s // 4), fill=c)
-
-
 _LOGO_FN = {
     "Claude":  _logo_claude,
     "OpenAI":  _logo_openai,
     "Gemini":  _logo_gemini,
-    "Copilot": _logo_copilot,
 }
 
 
@@ -230,20 +212,22 @@ def _build_menu(data: dict | None, on_refresh, on_settings, on_quit) -> pystray.
     if budgeted:
         for p in budgeted:
             label = (
-                f"{p['name']}: ↑${p['spent_today']:.4f} / ${p['remaining']:.2f}"
-                f" ({p['remaining_pct']:.0f}%)"
+                f"{p['name']}: ↑${p['spent_today']:.2f}"
+                f" / ${p['spent_total']:.2f}"
+                f" / ${p['remaining']:.2f} left"
             )
-            items.append(pystray.MenuItem(label, None, enabled=False))
+            items.append(pystray.MenuItem(label, lambda *_: None))
 
         items.append(pystray.Menu.SEPARATOR)
         total_r = sum(p["remaining"] for p in budgeted)
         total_t = sum(p["spent_today"] for p in budgeted)
+        total_m = sum(p["spent_total"] for p in budgeted)
         items.append(pystray.MenuItem(
-            f"Total: ↑${total_t:.4f} / ${total_r:.2f} remaining",
-            None, enabled=False,
+            f"Total: ↑${total_t:.2f} / ${total_m:.2f} / ${total_r:.2f} left",
+            lambda *_: None,
         ))
     else:
-        items.append(pystray.MenuItem("Daemon not running", None, enabled=False))
+        items.append(pystray.MenuItem("Daemon not running", lambda *_: None))
 
     items.append(pystray.Menu.SEPARATOR)
     items.append(pystray.MenuItem("Settings…", on_settings))

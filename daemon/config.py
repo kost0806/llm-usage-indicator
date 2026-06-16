@@ -22,14 +22,6 @@ from platformdirs import user_config_dir, user_data_dir
 
 _APP_NAME = "llm-usage-indicator"
 
-_BUDGET_KEY_MAP: dict[str, str] = {
-    "claude":  "Claude",
-    "gemini":  "Gemini",
-    "openai":  "OpenAI",
-    "copilot": "Copilot",
-    "other":   "Other",
-}
-
 
 @dataclass
 class GeneralConfig:
@@ -42,7 +34,7 @@ class GeneralConfig:
 @dataclass
 class Config:
     general: GeneralConfig = field(default_factory=GeneralConfig)
-    budgets: dict = field(default_factory=dict)  # {"Claude": 20.0, ...}
+    budgets: dict = field(default_factory=dict)  # {"claude": 20.0, ...}
 
     @property
     def db_path_expanded(self) -> Path:
@@ -77,7 +69,7 @@ def load_config() -> Config:
     )
 
     budgets = {
-        _BUDGET_KEY_MAP.get(k.lower(), k.title()): float(v)
+        k.lower(): float(v)
         for k, v in raw.get("budgets", {}).items()
     }
 

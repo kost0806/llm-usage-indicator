@@ -38,7 +38,6 @@ PROVIDERS = [
     ("claude",  "Claude"),
     ("gemini",  "Gemini"),
     ("openai",  "OpenAI"),
-    ("copilot", "Copilot"),
 ]
 
 DEFAULTS: dict = {
@@ -46,7 +45,7 @@ DEFAULTS: dict = {
     "ipc_host": "127.0.0.1",
     "ipc_port": 37891,
     "db_path": "",
-    "budgets": {"claude": 20.0, "gemini": 15.0, "openai": 10.0, "copilot": 0.0},
+    "budgets": {"claude": 20.0, "gemini": 15.0, "openai": 10.0},
 }
 
 
@@ -130,29 +129,6 @@ class SettingsWindow:
         ttk.Spinbox(frm_gen, from_=10, to=3600, increment=10,
                     textvariable=self._poll_var, width=8).grid(row=0, column=1, sticky="w")
 
-        # Advanced paths (collapsed in an expander-like frame)
-        frm_adv = ttk.LabelFrame(self._root, text="Advanced", padding=10)
-        frm_adv.pack(fill="x", **pad)
-
-        ttk.Label(frm_adv, text="IPC host:").grid(row=0, column=0, sticky="w", pady=4)
-        self._host_var = tk.StringVar(value=g.get("ipc_host", DEFAULTS["ipc_host"]))
-        ttk.Entry(frm_adv, textvariable=self._host_var, width=20).grid(row=0, column=1, sticky="ew")
-
-        ttk.Label(frm_adv, text="IPC port:").grid(row=1, column=0, sticky="w", pady=4)
-        self._port_var = tk.IntVar(value=int(g.get("ipc_port", DEFAULTS["ipc_port"])))
-        ttk.Spinbox(frm_adv, from_=1024, to=65535, increment=1,
-                    textvariable=self._port_var, width=8).grid(row=1, column=1, sticky="w")
-
-        ttk.Label(frm_adv, text="Database path:").grid(row=2, column=0, sticky="w", pady=4)
-        self._db_var = tk.StringVar(value=g.get("db_path", DEFAULTS["db_path"]))
-        ttk.Entry(frm_adv, textvariable=self._db_var, width=40).grid(
-            row=2, column=1, sticky="ew"
-        )
-        ttk.Label(frm_adv, text="(empty = platform default)", foreground="gray").grid(
-            row=3, column=1, sticky="w"
-        )
-        frm_adv.columnconfigure(1, weight=1)
-
         # ── Budget section ──
         frm_bud = ttk.LabelFrame(self._root, text="Monthly Budgets (USD)", padding=10)
         frm_bud.pack(fill="x", **pad)
@@ -185,8 +161,6 @@ class SettingsWindow:
         ttk.Button(frm_btn, text="Cancel", command=self._root.destroy).pack(
             side="right", padx=4
         )
-        ttk.Button(frm_btn, text="Save & Restart",
-                   command=self._on_save_restart).pack(side="right", padx=4)
         ttk.Button(frm_btn, text="Save", command=self._on_save).pack(
             side="right", padx=4
         )
@@ -194,12 +168,13 @@ class SettingsWindow:
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _collect(self) -> dict:
+        g = self._raw.get("general", {})
         return {
             "general": {
                 "poll_interval": self._poll_var.get(),
-                "ipc_host":      self._host_var.get().strip(),
-                "ipc_port":      self._port_var.get(),
-                "db_path":       self._db_var.get().strip(),
+                "ipc_host": g.get("ipc_host", DEFAULTS["ipc_host"]),
+                "ipc_port": int(g.get("ipc_port", DEFAULTS["ipc_port"])),
+                "db_path": g.get("db_path", DEFAULTS["db_path"]),
             },
             "budgets": {
                 key: round(var.get(), 2)
@@ -207,27 +182,19 @@ class SettingsWindow:
             },
         }
 
-    def _save(self) -> bool:
+    def _on_save(self) -> None:
         data = self._collect()
-        if not data["general"]["ipc_host"]:
-            self._set_status("IPC host cannot be empty.", error=True)
-            return False
         try:
             _write_toml(data)
-            return True
         except OSError as e:
             self._set_status(f"Failed to write config: {e}", error=True)
-            return False
-
-    def _on_save(self) -> None:
-        if self._save():
-            self._set_status(f"Saved to {CONFIG_PATH}")
-
-    def _on_save_restart(self) -> None:
-        if not self._save():
             return
+
         ok, msg = _restart_daemon()
-        self._set_status(msg, error=not ok)
+        if ok:
+            self._root.destroy()
+        else:
+            self._set_status(f"Saved, but daemon restart failed: {msg}", error=True)
 
     def _set_status(self, msg: str, *, error: bool = False) -> None:
         self._status_var.set(msg)
