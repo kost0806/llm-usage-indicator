@@ -120,12 +120,34 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }
 fi
 info "Python $PY_VER — OK"
 
-# ── Step 1b: Check for tkinter ───────────────────────────────────────────────
-info "Checking for tkinter..."
+# ── Step 1b: Check and auto-install tkinter ──────────────────────────────────
 if ! "$PYTHON" -c "import tkinter" 2>/dev/null; then
-    warn "tkinter is not installed — the Settings GUI will not open without it."
-    warn "Install it with:  sudo apt install python3-tk"
-    warn "Continuing installation. You can install python3-tk at any time."
+    warn "tkinter not found — the Settings GUI requires it."
+    _TK_OK=0
+    if command -v apt-get >/dev/null 2>&1; then
+        info "Trying: sudo apt-get install -y python3-tk"
+        sudo apt-get install -y python3-tk && _TK_OK=1 || true
+    elif command -v pacman >/dev/null 2>&1; then
+        info "Trying: sudo pacman -S --noconfirm tk"
+        sudo pacman -S --noconfirm tk && _TK_OK=1 || true
+    elif command -v dnf >/dev/null 2>&1; then
+        info "Trying: sudo dnf install -y python3-tkinter"
+        sudo dnf install -y python3-tkinter && _TK_OK=1 || true
+    elif command -v brew >/dev/null 2>&1; then
+        info "Trying: brew install python-tk"
+        brew install python-tk && _TK_OK=1 || true
+    fi
+    if [ "$_TK_OK" = "1" ]; then
+        info "tkinter installed successfully."
+    else
+        warn "Could not auto-install tkinter. Settings GUI will not work until you install it:"
+        warn "  Ubuntu/Debian : sudo apt install python3-tk"
+        warn "  Arch Linux    : sudo pacman -S tk"
+        warn "  Fedora/RHEL   : sudo dnf install python3-tkinter"
+        warn "  macOS (brew)  : brew install python-tk"
+    fi
+else
+    info "tkinter — OK"
 fi
 
 # ── Step 2: Install Python dependencies ──────────────────────────────────────
