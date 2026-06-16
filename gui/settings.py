@@ -10,9 +10,19 @@ Windows : %APPDATA%\\llm-usage-indicator\\config.toml
 
 import subprocess
 import sys
-import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+
+try:
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+except ModuleNotFoundError:
+    print(
+        "ERROR: tkinter is not installed.\n"
+        "On Ubuntu/Debian, install it with:\n"
+        "  sudo apt install python3-tk",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 if sys.version_info >= (3, 11):
     import tomllib

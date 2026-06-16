@@ -268,7 +268,15 @@ def _icon_title(providers: list[dict]) -> str:
 # ── Settings launcher ─────────────────────────────────────────────────────────
 
 def _open_settings() -> None:
+    import os
     import subprocess
+
+    def _notify_error(msg: str) -> None:
+        subprocess.run(
+            ["notify-send", "-a", "LLM Usage Indicator", "Settings error", msg],
+            capture_output=True,
+        )
+
     if sys.platform == "win32":
         exe_dir = Path(sys.executable).parent
         settings_exe = exe_dir / "llm-monitor-settings.exe"
@@ -278,10 +286,26 @@ def _open_settings() -> None:
     else:
         settings_bin = Path.home() / ".local" / "bin" / "llm-usage-indicator-settings"
         if settings_bin.exists():
-            subprocess.Popen([str(settings_bin)])
+            proc = subprocess.Popen(
+                [str(settings_bin)], stderr=subprocess.PIPE
+            )
+            # Give the window ~1 s to appear; if the process already died, surface the error.
+            try:
+                proc.wait(timeout=1.0)
+                err = (proc.stderr.read() if proc.stderr else b"").decode().strip()
+                msg = err or f"Settings exited immediately (code {proc.returncode})."
+                logger.warning("Settings failed: %s", msg)
+                _notify_error(msg)
+            except subprocess.TimeoutExpired:
+                pass  # still running — normal
             return
+
     # Fallback: run settings module directly
-    subprocess.Popen([sys.executable, "-m", "gui.settings"])
+    lib = str(Path.home() / ".local" / "lib")
+    env = {**os.environ, "PYTHONPATH": lib}
+    subprocess.Popen(
+        [sys.executable, "-m", "llm_usage_indicator.settings_gui"], env=env
+    )
 
 
 # ── Tray application ──────────────────────────────────────────────────────────

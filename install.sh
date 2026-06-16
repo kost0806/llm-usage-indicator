@@ -120,6 +120,14 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }
 fi
 info "Python $PY_VER — OK"
 
+# ── Step 1b: Check for tkinter ───────────────────────────────────────────────
+info "Checking for tkinter..."
+if ! "$PYTHON" -c "import tkinter" 2>/dev/null; then
+    warn "tkinter is not installed — the Settings GUI will not open without it."
+    warn "Install it with:  sudo apt install python3-tk"
+    warn "Continuing installation. You can install python3-tk at any time."
+fi
+
 # ── Step 2: Install Python dependencies ──────────────────────────────────────
 info "Installing Python dependencies..."
 
