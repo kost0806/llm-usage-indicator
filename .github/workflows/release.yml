@@ -90,6 +90,20 @@ jobs:
           bash -n debian/postinst   && echo "debian/postinst OK"
           bash -n debian/prerm      && echo "debian/prerm OK"
 
+      - name: Check PowerShell script syntax
+        run: |
+          if command -v pwsh >/dev/null 2>&1; then
+            pwsh -Command "
+              \$errors = \$null
+              \$null = [System.Management.Automation.Language.Parser]::ParseFile(
+                '${GITHUB_WORKSPACE}/install.ps1', [ref]\$null, [ref]\$errors)
+              if (\$errors) { \$errors | ForEach-Object { Write-Error \$_ }; exit 1 }
+              Write-Host 'install.ps1 OK'
+            "
+          else
+            echo "pwsh not available on this runner — PS1 syntax check skipped."
+          fi
+
   # ── 2. Resolve version ───────────────────────────────────────────────────
   version:
     name: Resolve version
@@ -141,13 +155,14 @@ jobs:
           VERSION="${{ needs.version.outputs.version }}"
           mkdir -p "dist/${ARTIFACT}"
 
-          cp -r daemon           "dist/${ARTIFACT}/"
-          cp -r waybar           "dist/${ARTIFACT}/"
-          cp -r systemd          "dist/${ARTIFACT}/"
-          cp -r gui              "dist/${ARTIFACT}/"
+          cp -r daemon              "dist/${ARTIFACT}/"
+          cp -r waybar              "dist/${ARTIFACT}/"
+          cp -r systemd             "dist/${ARTIFACT}/"
+          cp -r gui                 "dist/${ARTIFACT}/"
           cp    config.example.toml "dist/${ARTIFACT}/"
           cp    requirements.txt    "dist/${ARTIFACT}/"
           cp    install.sh          "dist/${ARTIFACT}/"
+          cp    install.ps1         "dist/${ARTIFACT}/"
           cp    README.md           "dist/${ARTIFACT}/" 2>/dev/null || true
           cp    docs/README.en.md   "dist/${ARTIFACT}/" 2>/dev/null || true
 
@@ -503,24 +518,33 @@ jobs:
             ## llm-usage-indicator v${{ needs.build.outputs.version }}
 
             Claude Code 대화 기록에서 직접 사용량을 집계하는 크로스플랫폼 LLM 크레딧 모니터.
-            Node.js 없음 — Python만으로 동작.
+            Node.js 없음 — Python 3.10+만으로 동작.
 
-            ### Windows 설치 (비전공자 권장)
+            ### Linux / macOS — 원라이너
 
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/kost0806/llm-usage-indicator/main/install.sh | bash
             ```
-            LLM-Usage-Indicator-Setup-${{ needs.build.outputs.version }}.exe 다운로드 후 실행
+
+            ### Windows — 원라이너 (PowerShell, 관리자 권한 불필요)
+
+            ```powershell
+            irm https://raw.githubusercontent.com/kost0806/llm-usage-indicator/main/install.ps1 | iex
             ```
 
-            ### Ubuntu/Debian 설치
+            ---
 
-            **tarball:**
+            ### 수동 설치 (tarball)
+
             ```bash
             tar -xzf llm-usage-indicator-${{ needs.build.outputs.version }}.tar.gz
             cd llm-usage-indicator-${{ needs.build.outputs.version }}
-            bash install.sh
+            bash install.sh          # Linux/macOS
+            # powershell -File install.ps1   # Windows
             ```
 
-            **Debian/Ubuntu (.deb):**
+            ### Debian/Ubuntu (.deb)
+
             ```bash
             sudo dpkg -i llm-usage-indicator-${{ needs.build.outputs.version }}.deb
             ```
