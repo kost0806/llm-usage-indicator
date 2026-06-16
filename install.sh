@@ -28,16 +28,31 @@ info "Python $PY_VER — OK"
 # ── Step 2: Install Python dependencies ──────────────────────────────────────
 info "Installing Python dependencies..."
 
-# Ensure pip is available (works with system Python, Anaconda/Miniconda, pyenv, etc.)
-if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
-    warn "pip not found via '$PYTHON -m pip'. Attempting to bootstrap with ensurepip..."
-    if ! "$PYTHON" -m ensurepip --upgrade 2>/dev/null; then
-        error "pip is not available and ensurepip failed.\n       On Ubuntu/Debian, install pip with:\n         sudo apt install python3-pip\n       Or, if using Anaconda/Miniconda:\n         conda install pip"
-    fi
-    info "pip bootstrapped via ensurepip."
+# Resolve pip: prefer python3 -m pip (guaranteed same interpreter), then PATH fallback.
+PIP_RUN=""
+if "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    PIP_RUN="$PYTHON -m pip"
+else
+    for _candidate in pip3 pip; do
+        if command -v "$_candidate" >/dev/null 2>&1; then
+            warn "pip not found via '$PYTHON -m pip'; using $(command -v "$_candidate") from PATH."
+            PIP_RUN="$_candidate"
+            break
+        fi
+    done
 fi
 
-"$PYTHON" -m pip install -r "$SCRIPT_DIR/requirements.txt" --user -q
+if [ -z "$PIP_RUN" ]; then
+    warn "No pip found in PATH. Attempting to bootstrap with ensurepip..."
+    if "$PYTHON" -m ensurepip --upgrade 2>/dev/null; then
+        PIP_RUN="$PYTHON -m pip"
+        info "pip bootstrapped via ensurepip."
+    else
+        error "pip is not available.\n       On Ubuntu/Debian:   sudo apt install python3-pip\n       On Anaconda/Miniconda: conda install pip"
+    fi
+fi
+
+$PIP_RUN install -r "$SCRIPT_DIR/requirements.txt" --user -q
 info "Dependencies installed."
 
 # ── Step 3: Create config directory ──────────────────────────────────────────
