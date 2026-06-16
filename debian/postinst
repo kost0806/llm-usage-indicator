@@ -24,6 +24,18 @@ case "$1" in
         REAL_UID=$(id -u "${REAL_USER}")
         XDG_RUNTIME_DIR="/run/user/${REAL_UID}"
 
+        # Enable linger so user services survive without an active login session.
+        loginctl enable-linger "${REAL_USER}" 2>/dev/null || true
+
+        # If a user@UID systemd service exists, make sure the user session is running
+        # so that systemctl --user commands inside install.sh work immediately.
+        if systemctl is-active --quiet "user@${REAL_UID}.service" 2>/dev/null; then
+            : # session already up
+        elif systemctl cat "user@${REAL_UID}.service" >/dev/null 2>&1; then
+            systemctl start "user@${REAL_UID}.service" 2>/dev/null || true
+            sleep 1
+        fi
+
         echo "llm-usage-indicator: Running setup for user '${REAL_USER}'..."
         if ! runuser -u "${REAL_USER}" -- \
             env HOME="${REAL_HOME}" \
@@ -34,14 +46,24 @@ case "$1" in
             echo "llm-usage-indicator: ERROR: Per-user setup failed (see above)."
             echo "  Removing package to restore a clean state..."
             echo ""
-            # Schedule dpkg --purge after the current dpkg transaction releases its lock.
-            # lock-frontend is held by apt; plain lock by dpkg -i.
-            # flock blocks until the lock is free, then dpkg --purge acquires it normally.
+            # Schedule dpkg --purge to run after the current dpkg transaction finishes.
+            #
+            # Why this works:
+            #   dpkg -i holds /var/lib/dpkg/lock (not lock-frontend, which is apt-only).
+            #   The background subshell closes all inherited file descriptors (> 2) to
+            #   release its inherited copy of dpkg's lock fd, then opens a fresh fd on
+            #   the same file and blocks with flock until dpkg releases the lock.
+            #   Once the lock is free the purge runs in a clean dpkg invocation.
             (
-                exec 9>>/var/lib/dpkg/lock-frontend
+                # Close all inherited fds > 2 so we do not hold dpkg's lock fd ourselves.
+                for _fd in $(ls /proc/self/fd 2>/dev/null); do
+                    [ "$_fd" -gt 2 ] && eval "exec $_fd>&-" 2>/dev/null || true
+                done
+                # Open a fresh fd on /var/lib/dpkg/lock and block until dpkg releases it.
+                exec 9>>/var/lib/dpkg/lock
                 flock -w 60 9 2>/dev/null || true
                 exec 9>&-
-                dpkg --purge llm-usage-indicator
+                SUDO_USER="${REAL_USER}" dpkg --purge llm-usage-indicator
             ) >/dev/null 2>&1 &
             disown
         fi

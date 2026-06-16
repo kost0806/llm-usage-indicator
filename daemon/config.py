@@ -16,7 +16,7 @@ from pathlib import Path
 if sys.version_info >= (3, 11):
     import tomllib
 else:
-    import tomllib  # type: ignore[no-redef]
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from platformdirs import user_config_dir, user_data_dir
 
