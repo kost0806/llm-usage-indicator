@@ -1,32 +1,13 @@
-name: CI / Release Pipeline
+name: Release
 
 on:
-  workflow_call:
-    inputs:
-      version:
-        description: 'Release version string (e.g. 1.2.3)'
-        type: string
-        required: true
-      is_release:
-        description: 'Whether to create a git tag and GitHub release'
-        type: string
-        required: false
-        default: 'false'
+  push:
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
   workflow_dispatch:
     inputs:
       version:
-        description: '버전 문자열 (비워두면 dev 버전 자동 생성)'
-        required: false
-        default: ''
-      is_release:
-        description: 'GitHub Release 생성 여부'
-        required: false
-        default: 'false'
-  push:
-    branches:
-      - 'claude/**'
-  pull_request:
-    branches: [main]
+        description: 'Version string (e.g. 1.2.3)'
+        required: true
 
 permissions:
   contents: write
@@ -35,509 +16,123 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── 1. Lint & syntax check ───────────────────────────────────────────────
-  lint:
-    name: Lint
+  release:
+    name: Build & publish release
     runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install aiosqlite platformdirs --quiet
-
-      - name: Syntax check (ast.parse)
-        run: |
-          python3 - <<'EOF'
-          import ast, sys, pathlib
-          files = list(pathlib.Path("daemon").rglob("*.py")) + list(pathlib.Path("gui").rglob("*.py"))
-          errors = []
-          for f in files:
-              try:
-                  ast.parse(f.read_text())
-                  print(f"OK  {f}")
-              except SyntaxError as e:
-                  errors.append(f"ERR {f}: {e}")
-                  print(f"ERR {f}: {e}", file=sys.stderr)
-          if errors:
-              sys.exit(1)
-          print(f"\nAll {len(files)} files OK.")
-          EOF
-
-      - name: Import check
-        run: |
-          cd $GITHUB_WORKSPACE
-          python3 -c "
-          import sys
-          sys.path.insert(0, '.')
-          from daemon.config import load_config
-          from daemon.store import Store
-          from daemon.providers.base import ProviderStatus, AbstractProvider, model_to_provider
-          from daemon.providers.jsonl_provider import JsonlProvider
-          from daemon.server import SocketServer
-          print('All imports OK')
-          "
-
-      - name: Check shell scripts
-        run: |
-          bash -n waybar/module.sh  && echo "waybar/module.sh OK"
-          bash -n install.sh        && echo "install.sh OK"
-          bash -n build-deb.sh      && echo "build-deb.sh OK"
-          bash -n debian/postinst   && echo "debian/postinst OK"
-          bash -n debian/prerm      && echo "debian/prerm OK"
-
-  # ── 2. Resolve version ───────────────────────────────────────────────────
-  version:
-    name: Resolve version
-    runs-on: ubuntu-22.04
-    needs: lint
-    outputs:
-      version: ${{ steps.resolve.outputs.version }}
-      artifact_name: ${{ steps.resolve.outputs.artifact_name }}
-      is_release: ${{ steps.resolve.outputs.is_release }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # ── Resolve version from tag or workflow_dispatch input ──────────────
       - name: Resolve version
-        id: resolve
+        id: ver
         run: |
           if [[ -n "${{ inputs.version }}" ]]; then
             VERSION="${{ inputs.version }}"
-            IS_RELEASE="${{ inputs.is_release }}"
           else
-            VERSION="0.0.0-dev.$(git rev-parse --short HEAD)"
-            IS_RELEASE="false"
+            VERSION="${GITHUB_REF_NAME#v}"
           fi
-          ARTIFACT_NAME="llm-usage-indicator-${VERSION}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
-          echo "is_release=${IS_RELEASE}" >> "$GITHUB_OUTPUT"
-          echo "Version: ${VERSION} | is_release: ${IS_RELEASE}"
+          echo "version=${VERSION}"     >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}"        >> "$GITHUB_OUTPUT"
+          echo "artifact=llm-usage-indicator-${VERSION}" >> "$GITHUB_OUTPUT"
 
-  # ── 3. Build Linux distributable artifact ────────────────────────────────
-  build:
-    name: Build artifact (Linux)
-    runs-on: ubuntu-22.04
-    needs: version
-    outputs:
-      version: ${{ needs.version.outputs.version }}
-      artifact_name: ${{ needs.version.outputs.artifact_name }}
-      is_release: ${{ needs.version.outputs.is_release }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Assemble release directory
+      # ── Inject version into install scripts ─────────────────────────────
+      - name: Stage install scripts with version injected
         run: |
-          ARTIFACT="${{ needs.version.outputs.artifact_name }}"
-          VERSION="${{ needs.version.outputs.version }}"
+          VER="${{ steps.ver.outputs.version }}"
+          mkdir -p dist/staged
+          cp install.sh install.ps1 dist/staged/
+
+          # Replace the @RELEASE_VERSION@ placeholder in both scripts.
+          # Using Python avoids shell-escaping issues with $ in the PS1 file.
+          python3 - "$VER" << 'PYEOF'
+          import sys
+          ver = sys.argv[1]
+
+          for path, old, new in [
+              ('dist/staged/install.sh',
+               '_RELEASE_VERSION=""  # @RELEASE_VERSION@',
+               f'_RELEASE_VERSION="{ver}"'),
+              ('dist/staged/install.ps1',
+               "$_RELEASE_VERSION = ''  # @RELEASE_VERSION@",
+               f"$_RELEASE_VERSION = '{ver}'"),
+          ]:
+              text = open(path).read()
+              assert old in text, f"Placeholder not found in {path}"
+              open(path, 'w').write(text.replace(old, new, 1))
+              print(f"Injected {ver} into {path}")
+          PYEOF
+
+      # ── Assemble installation tarball ────────────────────────────────────
+      - name: Assemble tarball
+        run: |
+          ARTIFACT="${{ steps.ver.outputs.artifact }}"
           mkdir -p "dist/${ARTIFACT}"
 
-          cp -r daemon           "dist/${ARTIFACT}/"
-          cp -r waybar           "dist/${ARTIFACT}/"
-          cp -r systemd          "dist/${ARTIFACT}/"
-          cp -r gui              "dist/${ARTIFACT}/"
-          cp    config.example.toml "dist/${ARTIFACT}/"
-          cp    requirements.txt    "dist/${ARTIFACT}/"
-          cp    install.sh          "dist/${ARTIFACT}/"
-          cp    README.md           "dist/${ARTIFACT}/" 2>/dev/null || true
-          cp    docs/README.en.md   "dist/${ARTIFACT}/" 2>/dev/null || true
+          cp -r daemon gui systemd waybar "dist/${ARTIFACT}/"
+          cp config.example.toml requirements.txt "dist/${ARTIFACT}/"
+          cp dist/staged/install.sh dist/staged/install.ps1 "dist/${ARTIFACT}/"
 
           find "dist/${ARTIFACT}" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
           find "dist/${ARTIFACT}" -name "*.pyc" -delete 2>/dev/null || true
 
-          chmod +x "dist/${ARTIFACT}/install.sh"
-          chmod +x "dist/${ARTIFACT}/waybar/module.sh"
+          chmod +x "dist/${ARTIFACT}/install.sh" \
+                   "dist/${ARTIFACT}/waybar/module.sh"
 
-          sed -i "s|^# install.sh.*|# install.sh — llm-usage-indicator v${VERSION}|" \
-            "dist/${ARTIFACT}/install.sh" || true
-
-          echo "Contents of dist/${ARTIFACT}:"
-          find "dist/${ARTIFACT}" -type f | sort
-
-      - name: Create tarball
-        run: |
-          ARTIFACT="${{ needs.version.outputs.artifact_name }}"
           cd dist
           tar -czf "${ARTIFACT}.tar.gz" "${ARTIFACT}/"
           sha256sum "${ARTIFACT}.tar.gz" > "${ARTIFACT}.tar.gz.sha256"
-          echo "Tarball size: $(du -sh "${ARTIFACT}.tar.gz" | cut -f1)"
+          echo "Tarball: $(du -sh "${ARTIFACT}.tar.gz" | cut -f1)"
 
-      - name: Create Debian package
-        run: |
-          VERSION="${{ needs.version.outputs.version }}"
-          chmod +x build-deb.sh
-          bash build-deb.sh "$VERSION"
-          ARTIFACT="${{ needs.version.outputs.artifact_name }}"
-          DEB_VERSION=$(echo "$VERSION" | sed 's/-dev\./~dev./g')
-          mv "dist/llm-usage-indicator_${DEB_VERSION}_all.deb" "dist/${ARTIFACT}.deb"
-          sha256sum "dist/${ARTIFACT}.deb" > "dist/${ARTIFACT}.deb.sha256"
-          echo "Deb package size: $(du -sh "dist/${ARTIFACT}.deb" | cut -f1)"
-
-      - name: Upload artifact (tarball)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ needs.version.outputs.artifact_name }}-tarball
-          path: |
-            dist/${{ needs.version.outputs.artifact_name }}.tar.gz
-            dist/${{ needs.version.outputs.artifact_name }}.tar.gz.sha256
-          retention-days: 30
-
-      - name: Upload artifact (deb)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ needs.version.outputs.artifact_name }}-deb
-          path: |
-            dist/${{ needs.version.outputs.artifact_name }}.deb
-            dist/${{ needs.version.outputs.artifact_name }}.deb.sha256
-          retention-days: 30
-
-  # ── 4. Build Windows installer (.exe) ────────────────────────────────────
-  build-windows:
-    name: Build artifact (Windows)
-    runs-on: windows-latest
-    needs: version
-    outputs:
-      version: ${{ needs.version.outputs.version }}
-      artifact_name: ${{ needs.version.outputs.artifact_name }}
-      is_release: ${{ needs.version.outputs.is_release }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt pyinstaller
-
-      - name: Build executables (PyInstaller)
-        run: pyinstaller windows/build.spec --distpath dist --workpath build-win
-
-      - name: Install NSIS
-        run: choco install nsis --no-progress -y
-
-      - name: Build NSIS installer
-        run: |
-          $env:PATH = "C:\Program Files (x86)\NSIS;$env:PATH"
-          makensis /DVERSION=${{ needs.version.outputs.version }} windows\installer.nsi
-        shell: pwsh
-
-      - name: Compute checksum
-        shell: pwsh
-        run: |
-          $exe = Get-Item "LLM-Usage-Indicator-Setup-*.exe"
-          (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $exe.Name |
-            Out-File "$($exe.Name).sha256" -Encoding ascii
-          Write-Host "Installer: $($exe.Name) ($('{0:N1}' -f ($exe.Length/1MB)) MB)"
-
-      - name: Upload Windows installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ needs.version.outputs.artifact_name }}-windows
-          path: |
-            LLM-Usage-Indicator-Setup-*.exe
-            LLM-Usage-Indicator-Setup-*.exe.sha256
-          retention-days: 30
-
-  # ── 5. Integration smoke test (Linux) ────────────────────────────────────
-  smoke-test:
-    name: Smoke test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    needs: build
-    strategy:
-      matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install aiosqlite platformdirs --quiet
-
-      - name: Test store CRUD
-        run: |
-          cd $GITHUB_WORKSPACE
-          python3 -c "
-          import asyncio, sys
-          sys.path.insert(0, '.')
-          from daemon.store import Store
-          from pathlib import Path
-
-          async def run():
-              store = Store(Path('/tmp/ci-test.db'))
-              await store.open()
-              await store.save_snapshot('claude', 5.0, 0.5)
-              snap = await store.get_latest_snapshot('claude')
-              assert snap is not None, 'Snapshot not found'
-              await store.close()
-              print('Store test PASSED')
-
-          asyncio.run(run())
-          "
-
-      - name: Test TCP socket server (status command)
-        run: |
-          cd $GITHUB_WORKSPACE
-          python3 -c "
-          import asyncio, json, time, sys, socket
-          sys.path.insert(0, '.')
-          from daemon.store import Store
-          from daemon.server import SocketServer
-          from daemon.providers.base import ProviderStatus
-          from pathlib import Path
-
-          TEST_PORT = 37999
-
-          async def run():
-              store = Store(Path('/tmp/ci-server.db'))
-              await store.open()
-              statuses = [
-                  ProviderStatus('Claude', 20.0, 7.6, 0.23, time.time()),
-                  ProviderStatus('Gemini', 15.0, 6.9, 0.05, time.time()),
-                  ProviderStatus('OpenAI', 10.0, 5.8, 1.10, time.time()),
-              ]
-              async def get_statuses():
-                  return statuses
-              server = SocketServer('127.0.0.1', TEST_PORT, store, get_statuses)
-              await server.start()
-
-              r, w = await asyncio.open_connection('127.0.0.1', TEST_PORT)
-              w.write(b'{\"cmd\":\"status\"}\n')
-              await w.drain()
-              data = json.loads(await r.readline())
-              w.close(); await w.wait_closed()
-              assert len(data['providers']) == 3
-              assert abs(data['total_remaining'] - 24.70) < 0.01
-              print(f'status: total_remaining=\${data[\"total_remaining\"]:.2f} OK')
-
-              await server.stop()
-              await store.close()
-              print('TCP socket server test PASSED')
-
-          asyncio.run(run())
-          "
-
-      - name: Test JsonlProvider parsing
-        run: |
-          cd $GITHUB_WORKSPACE
-          python3 -c "
-          import sys, time, asyncio, json, os, tempfile, datetime
-          sys.path.insert(0, '.')
-          from daemon.providers.jsonl_provider import JsonlProvider, _parse_file
-          from daemon.providers.base import model_to_provider
-          from daemon.store import Store
-          from pathlib import Path
-
-          # Unit-test model→provider mapping
-          assert model_to_provider('claude-sonnet-4-6') == 'Claude'
-          assert model_to_provider('gemini-1.5-pro') == 'Gemini'
-          assert model_to_provider('gpt-4o') == 'OpenAI'
-          assert model_to_provider('o3-mini') == 'OpenAI'
-          assert model_to_provider('unknown-model') == 'Other'
-          print('Model→provider mapping OK')
-
-          # Test JSONL file parsing with sample data
-          today = datetime.date.today().isoformat()
-          with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
-              fname = f.name
-              # Historical entry (cost pre-computed)
-              f.write(json.dumps({
-                  'type': 'assistant',
-                  'timestamp': '2026-06-01T10:00:00.000Z',
-                  'costUSD': 5.0,
-                  'message': {'model': 'claude-sonnet-4-6-20250219'}
-              }) + '\n')
-              # Today entry (token-based)
-              f.write(json.dumps({
-                  'type': 'assistant',
-                  'timestamp': today + 'T10:00:00.000Z',
-                  'message': {
-                      'model': 'claude-opus-4-8-20250514',
-                      'usage': {'input_tokens': 1000, 'output_tokens': 200,
-                                'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0}
-                  }
-              }) + '\n')
-              # Non-assistant entry (should be skipped)
-              f.write(json.dumps({'type': 'user', 'timestamp': today + 'T10:01:00.000Z'}) + '\n')
-
-          results = _parse_file(Path(fname))
-          os.unlink(fname)
-          assert len(results) == 2, f'Expected 2 results, got {len(results)}: {results}'
-          dates = [r[1] for r in results]
-          assert '2026-06-01' in dates
-          assert today in dates
-          print(f'JSONL parsing: {len(results)} entries parsed OK')
-
-          # Test provider aggregation via JsonlProvider
-          async def run():
-              store = Store(Path('/tmp/ci-jsonl.db'))
-              await store.open()
-              budgets = {'Claude': 20.0}
-              provider = JsonlProvider(budgets=budgets, store=store)
-              # With no JSONL files, should return zero budgeted providers
-              statuses = await provider.fetch_all_statuses()
-              claude = next((s for s in statuses if s.name == 'Claude'), None)
-              assert claude is not None
-              print(f'JsonlProvider zero-usage fallback OK (Claude budget=\${claude.budget_usd})')
-              await store.close()
-
-          asyncio.run(run())
-          print('JsonlProvider test PASSED')
-          "
-
-      - name: Test waybar script (no daemon → error JSON)
-        run: |
-          bash waybar/module.sh > /tmp/waybar-out.json
-          echo "Output: $(cat /tmp/waybar-out.json)"
-          python3 << 'PYEOF'
-          import json
-          with open('/tmp/waybar-out.json') as f:
-              data = json.load(f)
-          assert data.get('class') == 'llm-monitor-error', f'Expected error class, got: {data}'
-          print('Waybar fallback test PASSED')
-          PYEOF
-
-      - name: Test waybar script (with daemon → valid JSON)
-        run: |
-          cat > /tmp/ci-daemon-stub.py << 'PYDAEMON'
-          import asyncio, sys, time
-          sys.path.insert(0, '.')
-          from daemon.store import Store
-          from daemon.server import SocketServer
-          from daemon.providers.base import ProviderStatus
-          from pathlib import Path
-
-          async def run():
-              store = Store(Path('/tmp/ci-waybar.db'))
-              await store.open()
-              statuses = [ProviderStatus('Claude', 20.0, 7.6, 0.23, time.time())]
-              async def get_statuses():
-                  return statuses
-              server = SocketServer('127.0.0.1', 37891, store, get_statuses)
-              await server.start()
-              await asyncio.sleep(10)
-              await server.stop()
-              await store.close()
-          asyncio.run(run())
-          PYDAEMON
-
-          python3 /tmp/ci-daemon-stub.py &
-          BGPID=$!
-          sleep 1
-
-          bash waybar/module.sh > /tmp/waybar-live.json
-          echo "Output: $(cat /tmp/waybar-live.json)"
-          python3 << 'PYEOF'
-          import json
-          with open('/tmp/waybar-live.json') as f:
-              data = json.load(f)
-          assert data.get('class') == 'llm-monitor', f'Expected llm-monitor class, got: {data}'
-          assert 'C:' in data.get('text', ''), f'Expected C: in text, got: {data}'
-          print('Waybar live test PASSED')
-          PYEOF
-          wait $BGPID
-
-  # ── 6. Tag & GitHub Release ───────────────────────────────────────────────
-  release:
-    name: GitHub Release
-    runs-on: ubuntu-22.04
-    needs: [build, build-windows, smoke-test]
-    if: needs.build.outputs.is_release == 'true'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download tarball artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.artifact_name }}-tarball
-          path: dist/
-
-      - name: Download deb artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.artifact_name }}-deb
-          path: dist/
-
-      - name: Download Windows installer
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.artifact_name }}-windows
-          path: dist/
-
+      # ── Create git tag when triggered via workflow_dispatch ──────────────
       - name: Create git tag
+        if: github.event_name == 'workflow_dispatch'
         run: |
-          TAG="v${{ needs.build.outputs.version }}"
-          git config user.name "github-actions[bot]"
+          TAG="${{ steps.ver.outputs.tag }}"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists, skipping"
+            echo "Tag $TAG already exists — skipping."
           else
             git tag "$TAG"
             git push origin "$TAG"
             echo "Created tag: $TAG"
           fi
 
+      # ── Publish GitHub Release ────────────────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.build.outputs.version }}
-          name: "llm-usage-indicator v${{ needs.build.outputs.version }}"
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: "llm-usage-indicator ${{ steps.ver.outputs.tag }}"
           body: |
-            ## llm-usage-indicator v${{ needs.build.outputs.version }}
+            ## llm-usage-indicator ${{ steps.ver.outputs.tag }}
 
-            Claude Code 대화 기록에서 직접 사용량을 집계하는 크로스플랫폼 LLM 크레딧 모니터.
-            Node.js 없음 — Python만으로 동작.
-
-            ### Windows 설치 (비전공자 권장)
-
-            ```
-            LLM-Usage-Indicator-Setup-${{ needs.build.outputs.version }}.exe 다운로드 후 실행
-            ```
-
-            ### Ubuntu/Debian 설치
-
-            **tarball:**
+            ### Linux / macOS
             ```bash
-            tar -xzf llm-usage-indicator-${{ needs.build.outputs.version }}.tar.gz
-            cd llm-usage-indicator-${{ needs.build.outputs.version }}
-            bash install.sh
+            curl -fsSL https://raw.githubusercontent.com/kost0806/llm-usage-indicator/main/install.sh | bash
             ```
 
-            **Debian/Ubuntu (.deb):**
-            ```bash
-            sudo dpkg -i llm-usage-indicator-${{ needs.build.outputs.version }}.deb
+            ### Windows (PowerShell — 관리자 권한 불필요)
+            ```powershell
+            irm https://raw.githubusercontent.com/kost0806/llm-usage-indicator/main/install.ps1 | iex
             ```
 
-            ### Checksums
+            ### 수동 설치 (tarball)
             ```bash
-            sha256sum -c llm-usage-indicator-${{ needs.build.outputs.version }}.tar.gz.sha256
-            sha256sum -c llm-usage-indicator-${{ needs.build.outputs.version }}.deb.sha256
+            tar -xzf llm-usage-indicator-${{ steps.ver.outputs.version }}.tar.gz
+            cd llm-usage-indicator-${{ steps.ver.outputs.version }}
+            bash install.sh           # Linux/macOS
+            powershell -File install.ps1  # Windows
             ```
           files: |
-            dist/*.tar.gz
-            dist/*.tar.gz.sha256
-            dist/*.deb
-            dist/*.deb.sha256
-            dist/LLM-Usage-Indicator-Setup-*.exe
-            dist/LLM-Usage-Indicator-Setup-*.exe.sha256
+            dist/llm-usage-indicator-${{ steps.ver.outputs.version }}.tar.gz
+            dist/llm-usage-indicator-${{ steps.ver.outputs.version }}.tar.gz.sha256
+            dist/staged/install.sh
+            dist/staged/install.ps1
           draft: false
-          prerelease: ${{ contains(needs.build.outputs.version, 'dev') }}
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
