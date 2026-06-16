@@ -54,10 +54,11 @@ sed \
     "${SCRIPT_DIR}/debian/control" > "${PKG_DIR}/DEBIAN/control"
 echo "Installed-Size: ${INSTALLED_SIZE}" >> "${PKG_DIR}/DEBIAN/control"
 
-# ── DEBIAN/postinst + prerm ───────────────────────────────────────────────────
+# ── DEBIAN/preinst + postinst + prerm ────────────────────────────────────────
+cp "${SCRIPT_DIR}/debian/preinst"  "${PKG_DIR}/DEBIAN/preinst"
 cp "${SCRIPT_DIR}/debian/postinst" "${PKG_DIR}/DEBIAN/postinst"
 cp "${SCRIPT_DIR}/debian/prerm"    "${PKG_DIR}/DEBIAN/prerm"
-chmod 755 "${PKG_DIR}/DEBIAN/postinst" "${PKG_DIR}/DEBIAN/prerm"
+chmod 755 "${PKG_DIR}/DEBIAN/preinst" "${PKG_DIR}/DEBIAN/postinst" "${PKG_DIR}/DEBIAN/prerm"
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 mkdir -p "${SCRIPT_DIR}/dist"

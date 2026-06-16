@@ -1,0 +1,47 @@
+#!/bin/bash
+# Runs BEFORE dpkg extracts any files.
+# Fail here → dpkg aborts without touching the filesystem, package stays uninstalled.
+set -e
+
+case "$1" in
+    install|upgrade)
+        REAL_USER=""
+        if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+            REAL_USER="${SUDO_USER}"
+        elif [ -n "${PKEXEC_UID:-}" ] && [ "${PKEXEC_UID}" != "0" ]; then
+            REAL_USER=$(getent passwd "${PKEXEC_UID}" | cut -d: -f1)
+        fi
+
+        # Cannot determine installing user — skip checks, postinst will handle it.
+        [ -z "${REAL_USER}" ] && exit 0
+
+        # ── Python 3.10+ ──────────────────────────────────────────────────────
+        if ! runuser -u "${REAL_USER}" -- python3 --version >/dev/null 2>&1; then
+            echo "llm-usage-indicator: ERROR: python3 not found." >&2
+            echo "  Please install Python 3.10 or newer and retry." >&2
+            exit 1
+        fi
+
+        PY_VER=$(runuser -u "${REAL_USER}" -- python3 --version 2>&1 | awk '{print $2}')
+        PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
+        PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
+        if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
+            echo "llm-usage-indicator: ERROR: Python 3.10+ required (found $PY_VER)." >&2
+            exit 1
+        fi
+
+        # ── pip (any available method) ─────────────────────────────────────────
+        PIP_OK=0
+        runuser -u "${REAL_USER}" -- python3 -m pip --version >/dev/null 2>&1 && PIP_OK=1
+        [ "$PIP_OK" = "0" ] && runuser -u "${REAL_USER}" -- command -v pip3 >/dev/null 2>&1 && PIP_OK=1
+        [ "$PIP_OK" = "0" ] && runuser -u "${REAL_USER}" -- command -v pip  >/dev/null 2>&1 && PIP_OK=1
+        [ "$PIP_OK" = "0" ] && runuser -u "${REAL_USER}" -- python3 -m ensurepip --help >/dev/null 2>&1 && PIP_OK=1
+
+        if [ "$PIP_OK" = "0" ]; then
+            echo "llm-usage-indicator: ERROR: pip is not available." >&2
+            echo "  On Ubuntu/Debian:      sudo apt install python3-pip" >&2
+            echo "  On Anaconda/Miniconda: conda install pip" >&2
+            exit 1
+        fi
+        ;;
+esac

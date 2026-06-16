@@ -31,10 +31,19 @@ case "$1" in
                 DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus" \
             bash /usr/share/llm-usage-indicator/install.sh; then
             echo ""
-            echo "llm-usage-indicator: WARNING: Per-user setup failed (see above)."
-            echo "  Fix the issue, then run manually:"
-            echo "    bash /usr/share/llm-usage-indicator/install.sh"
+            echo "llm-usage-indicator: ERROR: Per-user setup failed (see above)."
+            echo "  Removing package to restore a clean state..."
             echo ""
+            # Schedule dpkg --purge after the current dpkg transaction releases its lock.
+            # lock-frontend is held by apt; plain lock by dpkg -i.
+            # flock blocks until the lock is free, then dpkg --purge acquires it normally.
+            (
+                exec 9>>/var/lib/dpkg/lock-frontend
+                flock -w 60 9 2>/dev/null || true
+                exec 9>&-
+                dpkg --purge llm-usage-indicator
+            ) >/dev/null 2>&1 &
+            disown
         fi
         ;;
 esac
