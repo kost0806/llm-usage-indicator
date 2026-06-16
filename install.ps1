@@ -15,26 +15,40 @@
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 # When run via irm|iex, $PSScriptRoot is empty and no local source files exist.
-# Download the latest release tarball and re-exec from there.
+# Download the release tarball and re-exec from there.
+#
+# $_RELEASE_VERSION is empty in the main-branch copy; release.yml injects the
+# exact version string (e.g. "1.2.3") into release assets so they always
+# download the matching tarball instead of querying for the latest.
+$_RELEASE_VERSION = ''  # @RELEASE_VERSION@
+
 $_local = $PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'requirements.txt'))
 if (-not $_local) {
     $ErrorActionPreference = 'Stop'
     $tmp = Join-Path $env:TEMP "llm-usage-indicator-$(Get-Random)"
     New-Item -ItemType Directory -Path $tmp | Out-Null
     try {
-        Write-Host '[INFO] Bootstrapping — fetching latest release...' -ForegroundColor Green
-        try {
-            $rel = Invoke-RestMethod 'https://api.github.com/repos/kost0806/llm-usage-indicator/releases/latest'
-            $tag = $rel.tag_name
-        } catch { $tag = $null }
-
-        if ($tag) {
-            $ver = $tag -replace '^v', ''
-            $url = "https://github.com/kost0806/llm-usage-indicator/releases/download/$tag/llm-usage-indicator-$ver.tar.gz"
+        if ($_RELEASE_VERSION) {
+            # Running from a versioned release asset — download the exact tarball.
+            $tag = "v$_RELEASE_VERSION"
+            $url = "https://github.com/kost0806/llm-usage-indicator/releases/download/$tag/llm-usage-indicator-$_RELEASE_VERSION.tar.gz"
             Write-Host "[INFO] Downloading llm-usage-indicator $tag..." -ForegroundColor Green
         } else {
-            Write-Host '[WARN] No release found — using main branch.' -ForegroundColor Yellow
-            $url = 'https://github.com/kost0806/llm-usage-indicator/archive/refs/heads/main.tar.gz'
+            # Running from the main branch — resolve the latest release.
+            Write-Host '[INFO] Bootstrapping — fetching latest release...' -ForegroundColor Green
+            try {
+                $rel = Invoke-RestMethod 'https://api.github.com/repos/kost0806/llm-usage-indicator/releases/latest'
+                $tag = $rel.tag_name
+            } catch { $tag = $null }
+
+            if ($tag) {
+                $ver = $tag -replace '^v', ''
+                $url = "https://github.com/kost0806/llm-usage-indicator/releases/download/$tag/llm-usage-indicator-$ver.tar.gz"
+                Write-Host "[INFO] Downloading llm-usage-indicator $tag..." -ForegroundColor Green
+            } else {
+                Write-Host '[WARN] No release found — using main branch.' -ForegroundColor Yellow
+                $url = 'https://github.com/kost0806/llm-usage-indicator/archive/refs/heads/main.tar.gz'
+            }
         }
 
         $archive = Join-Path $tmp 'pkg.tar.gz'

@@ -38,6 +38,33 @@ jobs:
           echo "tag=v${VERSION}"        >> "$GITHUB_OUTPUT"
           echo "artifact=llm-usage-indicator-${VERSION}" >> "$GITHUB_OUTPUT"
 
+      # ── Inject version into install scripts ─────────────────────────────
+      - name: Stage install scripts with version injected
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          mkdir -p dist/staged
+          cp install.sh install.ps1 dist/staged/
+
+          # Replace the @RELEASE_VERSION@ placeholder in both scripts.
+          # Using Python avoids shell-escaping issues with $ in the PS1 file.
+          python3 - "$VER" << 'PYEOF'
+          import sys
+          ver = sys.argv[1]
+
+          for path, old, new in [
+              ('dist/staged/install.sh',
+               '_RELEASE_VERSION=""  # @RELEASE_VERSION@',
+               f'_RELEASE_VERSION="{ver}"'),
+              ('dist/staged/install.ps1',
+               "$_RELEASE_VERSION = ''  # @RELEASE_VERSION@",
+               f"$_RELEASE_VERSION = '{ver}'"),
+          ]:
+              text = open(path).read()
+              assert old in text, f"Placeholder not found in {path}"
+              open(path, 'w').write(text.replace(old, new, 1))
+              print(f"Injected {ver} into {path}")
+          PYEOF
+
       # ── Assemble installation tarball ────────────────────────────────────
       - name: Assemble tarball
         run: |
@@ -45,8 +72,8 @@ jobs:
           mkdir -p "dist/${ARTIFACT}"
 
           cp -r daemon gui systemd waybar "dist/${ARTIFACT}/"
-          cp config.example.toml requirements.txt \
-             install.sh install.ps1       "dist/${ARTIFACT}/"
+          cp config.example.toml requirements.txt "dist/${ARTIFACT}/"
+          cp dist/staged/install.sh dist/staged/install.ps1 "dist/${ARTIFACT}/"
 
           find "dist/${ARTIFACT}" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
           find "dist/${ARTIFACT}" -name "*.pyc" -delete 2>/dev/null || true
@@ -103,8 +130,8 @@ jobs:
           files: |
             dist/llm-usage-indicator-${{ steps.ver.outputs.version }}.tar.gz
             dist/llm-usage-indicator-${{ steps.ver.outputs.version }}.tar.gz.sha256
-            install.sh
-            install.ps1
+            dist/staged/install.sh
+            dist/staged/install.ps1
           draft: false
           prerelease: false
         env:

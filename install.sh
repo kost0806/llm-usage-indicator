@@ -6,23 +6,35 @@
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 # When piped through bash (curl … | bash), BASH_SOURCE[0] is empty and the
-# source tree is not present locally.  Download the latest release and re-exec.
+# source tree is not present locally.  Download the release tarball and re-exec.
+#
+# _RELEASE_VERSION is empty in the main-branch copy; release.yml injects the
+# exact version string (e.g. "1.2.3") into release assets so they always
+# download the matching tarball instead of querying for the latest.
+_RELEASE_VERSION=""  # @RELEASE_VERSION@
+
 _BS_SELF="${BASH_SOURCE[0]:-}"
 if [[ -z "$_BS_SELF" ]] || [[ ! -f "$_BS_SELF" ]] || [[ ! -d "$(dirname "$_BS_SELF")/daemon" ]]; then
-    printf '\033[0;32m[INFO]\033[0m Bootstrapping — fetching latest release...\n'
     _BS_TMP=$(mktemp -d) || { printf '\033[0;31m[ERROR]\033[0m mktemp failed\n' >&2; exit 1; }
 
-    _BS_TAG=$(curl -fsSL \
-        'https://api.github.com/repos/kost0806/llm-usage-indicator/releases/latest' \
-        2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-
-    if [[ -n "$_BS_TAG" ]]; then
-        _BS_VER="${_BS_TAG#v}"
-        _BS_URL="https://github.com/kost0806/llm-usage-indicator/releases/download/${_BS_TAG}/llm-usage-indicator-${_BS_VER}.tar.gz"
+    if [[ -n "$_RELEASE_VERSION" ]]; then
+        # Running from a versioned release asset — download the exact tarball.
+        _BS_TAG="v${_RELEASE_VERSION}"
+        _BS_URL="https://github.com/kost0806/llm-usage-indicator/releases/download/${_BS_TAG}/llm-usage-indicator-${_RELEASE_VERSION}.tar.gz"
         printf '\033[0;32m[INFO]\033[0m Downloading llm-usage-indicator %s...\n' "$_BS_TAG"
     else
-        printf '\033[1;33m[WARN]\033[0m No release found — using main branch.\n'
-        _BS_URL='https://github.com/kost0806/llm-usage-indicator/archive/refs/heads/main.tar.gz'
+        # Running from the main branch — resolve the latest release.
+        printf '\033[0;32m[INFO]\033[0m Bootstrapping — fetching latest release...\n'
+        _BS_TAG=$(curl -fsSL \
+            'https://api.github.com/repos/kost0806/llm-usage-indicator/releases/latest' \
+            2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+        if [[ -n "$_BS_TAG" ]]; then
+            _BS_URL="https://github.com/kost0806/llm-usage-indicator/releases/download/${_BS_TAG}/llm-usage-indicator-${_BS_TAG#v}.tar.gz"
+            printf '\033[0;32m[INFO]\033[0m Downloading llm-usage-indicator %s...\n' "$_BS_TAG"
+        else
+            printf '\033[1;33m[WARN]\033[0m No release found — using main branch source.\n'
+            _BS_URL='https://github.com/kost0806/llm-usage-indicator/archive/refs/heads/main.tar.gz'
+        fi
     fi
 
     if ! curl -fsSL "$_BS_URL" | tar -xz -C "$_BS_TMP" --strip-components=1; then
@@ -31,9 +43,8 @@ if [[ -z "$_BS_SELF" ]] || [[ ! -f "$_BS_SELF" ]] || [[ ! -d "$(dirname "$_BS_SE
         exit 1
     fi
 
-    # Hand off to the real install.sh; pass dir so it can clean up on finish.
     LLM_BOOTSTRAP_TMP="$_BS_TMP" exec bash "$_BS_TMP/install.sh" "$@"
-    exit 1  # exec should not return
+    exit 1
 fi
 # ──────────────────────────────────────────────────────────────────────────────
 
