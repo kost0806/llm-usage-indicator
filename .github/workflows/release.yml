@@ -116,22 +116,63 @@ jobs:
           body: |
             ## llm-usage-indicator ${{ steps.ver.outputs.tag }}
 
-            ### Linux / macOS
+            ---
+
+            ### 의존성 (Ubuntu/Debian)
+            Settings GUI를 사용하려면 `python3-tk`가 필요합니다.
+            ```bash
+            sudo apt install python3-tk
+            ```
+
+            ---
+
+            ### 항상 최신 버전 설치
+
+            새 릴리스가 나올 때마다 자동으로 최신 버전을 받습니다.
+
+            **Linux / macOS**
             ```bash
             curl -fsSL https://raw.githubusercontent.com/kost0806/llm-usage-indicator/main/install.sh | bash
             ```
 
-            ### Windows (PowerShell — 관리자 권한 불필요)
+            **Windows (PowerShell — 관리자 권한 불필요)**
             ```powershell
             irm https://raw.githubusercontent.com/kost0806/llm-usage-indicator/main/install.ps1 | iex
             ```
 
-            ### 수동 설치 (tarball)
+            ---
+
+            ### 이 버전(${{ steps.ver.outputs.tag }})만 설치
+
+            버전을 고정하거나 재현 가능한 배포가 필요할 때 사용합니다.
+
+            **Linux / macOS**
+            ```bash
+            curl -fsSL https://github.com/kost0806/llm-usage-indicator/releases/download/${{ steps.ver.outputs.tag }}/install.sh | bash
+            ```
+
+            **Windows (PowerShell)**
+            ```powershell
+            irm https://github.com/kost0806/llm-usage-indicator/releases/download/${{ steps.ver.outputs.tag }}/install.ps1 | iex
+            ```
+
+            **tarball 직접 설치 (Linux / macOS)**
             ```bash
             tar -xzf llm-usage-indicator-${{ steps.ver.outputs.version }}.tar.gz
             cd llm-usage-indicator-${{ steps.ver.outputs.version }}
-            bash install.sh           # Linux/macOS
-            powershell -File install.ps1  # Windows
+            bash install.sh
+            ```
+
+            **tarball 직접 설치 (Windows)**
+            ```powershell
+            Expand-Archive llm-usage-indicator-${{ steps.ver.outputs.version }}.zip
+            cd llm-usage-indicator-${{ steps.ver.outputs.version }}
+            powershell -File install.ps1
+            ```
+
+            **체크섬 검증**
+            ```bash
+            sha256sum -c llm-usage-indicator-${{ steps.ver.outputs.version }}.tar.gz.sha256
             ```
           files: |
             dist/llm-usage-indicator-${{ steps.ver.outputs.version }}.tar.gz

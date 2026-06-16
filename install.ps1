@@ -117,6 +117,33 @@ if ([int]$major -lt 3 -or ([int]$major -eq 3 -and [int]$minor -lt 10)) {
 }
 Write-Info "Python $pyVer — OK"
 
+# ── Step 1b: Check for tkinter ────────────────────────────────────────────────
+Write-Info 'Checking for tkinter...'
+& $py.Source -c 'import tkinter' 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    # Microsoft Store Python ships without tkinter.
+    if ($py.Source -like '*WindowsApps*') {
+        Write-Host ''
+        Write-Warn 'Python from the Microsoft Store does not include tkinter.'
+        Write-Warn 'The Settings GUI requires tkinter. To fix this:'
+        Write-Warn '  1. Uninstall Python from the Microsoft Store.'
+        Write-Warn '  2. Install Python 3.10+ from https://python.org'
+        Write-Warn '     (keep "tcl/tk and IDLE" checked — it is on by default).'
+        Write-Warn '  3. Re-run this installer.'
+        Write-Host ''
+        Write-Warn 'Continuing installation — Settings GUI will not work until you switch to python.org Python.'
+    } else {
+        Write-Host ''
+        Write-Warn 'tkinter is not available with your Python installation.'
+        Write-Warn 'Reinstall Python 3.10+ from https://python.org'
+        Write-Warn 'During install, ensure "tcl/tk and IDLE" is checked (it is on by default).'
+        Write-Host ''
+        Write-Warn 'Continuing installation — Settings GUI will not work until tkinter is available.'
+    }
+} else {
+    Write-Info 'tkinter — OK'
+}
+
 # Prefer pythonw.exe (no console window) for background daemon/tray.
 $pythonw = Join-Path (Split-Path $py.Source) 'pythonw.exe'
 if (-not (Test-Path $pythonw)) { $pythonw = $py.Source }
