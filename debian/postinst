@@ -25,10 +25,16 @@ case "$1" in
         XDG_RUNTIME_DIR="/run/user/${REAL_UID}"
 
         echo "llm-usage-indicator: Running setup for user '${REAL_USER}'..."
-        runuser -u "${REAL_USER}" -- \
+        if ! runuser -u "${REAL_USER}" -- \
             env HOME="${REAL_HOME}" \
                 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
                 DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus" \
-            bash /usr/share/llm-usage-indicator/install.sh
+            bash /usr/share/llm-usage-indicator/install.sh; then
+            echo ""
+            echo "llm-usage-indicator: WARNING: Per-user setup failed (see above)."
+            echo "  Fix the issue, then run manually:"
+            echo "    bash /usr/share/llm-usage-indicator/install.sh"
+            echo ""
+        fi
         ;;
 esac

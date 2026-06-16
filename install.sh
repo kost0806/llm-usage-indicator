@@ -52,7 +52,9 @@ if [ -z "$PIP_RUN" ]; then
     fi
 fi
 
-$PIP_RUN install -r "$SCRIPT_DIR/requirements.txt" --user -q
+if ! $PIP_RUN install -r "$SCRIPT_DIR/requirements.txt" --user -q; then
+    error "Failed to install Python dependencies.\n       Check your network connection, then retry:\n         $PIP_RUN install -r /usr/share/llm-usage-indicator/requirements.txt --user"
+fi
 info "Dependencies installed."
 
 # ── Step 3: Create config directory ──────────────────────────────────────────
