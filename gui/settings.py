@@ -202,16 +202,19 @@ class SettingsWindow:
             textvariable=self._poll_var, width=6,
         ).pack(side="right")
 
-        # ── Budget section ────────────────────────────────────────────────────
-        tk.Label(body, text="Monthly Budgets (USD)", font=_F_H, bg=_BG,
+        # ── Credits section ───────────────────────────────────────────────────
+        tk.Label(body, text="Credits", font=_F_H, bg=_BG,
                  fg=_TEXT, anchor="w").pack(fill="x", pady=(0, 6))
 
         card_bud = self._card(body)
         card_bud.pack(fill="x", pady=(0, 14))
 
-        tk.Label(card_bud, text="Set a provider's budget to 0 to hide it.",
-                 font=_F_SM, bg=_CARD, fg=_MUTED,
-                 anchor="w").pack(fill="x", padx=16, pady=(12, 8))
+        tk.Label(
+            card_bud,
+            text="Monthly credit limit per provider (USD). Set 0 to hide a provider.",
+            font=_F_SM, bg=_CARD, fg=_MUTED,
+            anchor="w", wraplength=340, justify="left",
+        ).pack(fill="x", padx=16, pady=(12, 8))
 
         # Thin rule below hint
         tk.Frame(card_bud, bg=_BORDER, height=1).pack(fill="x")

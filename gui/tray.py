@@ -11,7 +11,6 @@ Architecture:
 
 import json
 import logging
-import math
 import signal
 import socket
 import subprocess
@@ -58,13 +57,6 @@ def _fetch_status() -> dict | None:
 
 # ── Tray icon rendering ───────────────────────────────────────────────────────
 
-PROVIDER_BRAND: dict[str, dict] = {
-    "Claude":  {"bg": (209, 90,  42),  "ring": (232, 130, 80)},
-    "OpenAI":  {"bg": (16,  163, 127), "ring": (80,  200, 160)},
-    "Gemini":  {"bg": (66,  133, 244), "ring": (130, 170, 255)},
-    "Other":   {"bg": (100, 100, 100), "ring": (160, 160, 160)},
-}
-
 PROVIDER_EMOJI: dict[str, str] = {
     "Claude":  "🟠",
     "OpenAI":  "🟢",
@@ -73,111 +65,56 @@ PROVIDER_EMOJI: dict[str, str] = {
 }
 
 
-def _logo_claude(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: tuple) -> None:
-    w = max(2, r // 4)
-    for i in range(6):
-        angle = math.radians(i * 60 - 90)
-        x1 = cx + (r * 0.28) * math.cos(angle)
-        y1 = cy + (r * 0.28) * math.sin(angle)
-        x2 = cx + r * math.cos(angle)
-        y2 = cy + r * math.sin(angle)
-        draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
-
-
-def _logo_openai(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: tuple) -> None:
-    w = max(2, r // 5)
-    draw.arc([cx - r, cy - r, cx + r, cy + r], 0, 360, fill=color, width=w)
-    nr = max(2, r // 6)
-    for i in range(6):
-        angle = math.radians(i * 60)
-        mx = int(cx + r * math.cos(angle))
-        my = int(cy + r * math.sin(angle))
-        draw.ellipse([mx - nr, my - nr, mx + nr, my + nr], fill=color)
-    cr = max(2, r // 5)
-    draw.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=color)
-
-
-def _logo_gemini(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: tuple) -> None:
-    points = []
-    for i in range(8):
-        angle = math.radians(i * 45 - 90)
-        radius = r if i % 2 == 0 else r * 0.28
-        points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-    draw.polygon(points, fill=color)
-
-
-_LOGO_FN = {
-    "Claude":  _logo_claude,
-    "OpenAI":  _logo_openai,
-    "Gemini":  _logo_gemini,
-}
-
-
-def _single_provider_icon(name: str, warning: bool, error: bool) -> Image.Image:
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    brand = PROVIDER_BRAND.get(name, PROVIDER_BRAND["Other"])
-    ring = (180, 60, 60) if error else (220, 160, 30) if warning else brand["ring"]
-    draw.ellipse([3, 3, 61, 61], fill=brand["bg"] + (255,))
-    draw.arc([1, 1, 63, 63], 0, 360, fill=ring + (255,), width=3)
-    logo_fn = _LOGO_FN.get(name)
-    if logo_fn:
-        logo_fn(draw, 32, 32, 19, (255, 255, 255))
-    else:
-        draw.arc([13, 13, 51, 51], 0, 360, fill=(255, 255, 255), width=3)
-    return img
-
-
-def _small_provider_badge(name: str, size: int) -> Image.Image:
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    brand = PROVIDER_BRAND.get(name, PROVIDER_BRAND["Other"])
-    cx = cy = size // 2
-    r = cx - 2
-    draw.ellipse([2, 2, size - 3, size - 3], fill=brand["bg"] + (255,))
-    logo_fn = _LOGO_FN.get(name)
-    if logo_fn:
-        logo_fn(draw, cx, cy, max(3, r - 3), (255, 255, 255))
-    return img
-
-
-def _make_robot_icon(warning: bool = False, error: bool = False) -> Image.Image:
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    body = (180, 60, 60, 255) if error else (200, 140, 40, 255) if warning else (60, 160, 90, 255)
-    draw.rounded_rectangle([6, 8, 58, 52], radius=8, fill=body)
-    draw.ellipse([16, 18, 28, 30], fill=(220, 240, 220))
-    draw.ellipse([36, 18, 48, 30], fill=(220, 240, 220))
-    draw.ellipse([19, 21, 25, 27], fill=(20, 20, 20))
-    draw.ellipse([39, 21, 45, 27], fill=(20, 20, 20))
-    draw.arc([18, 34, 46, 50], start=10, end=170, fill=(220, 240, 220), width=3)
-    draw.line([32, 8, 32, 2], fill=body, width=3)
-    draw.ellipse([29, 0, 35, 6], fill=body)
-    return img
+def _load_font(size: int):
+    """Load a bold system font for the tray number display."""
+    from PIL import ImageFont
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+    ]
+    for path in candidates:
+        if Path(path).exists():
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    return ImageFont.load_default()
 
 
 def _make_icon(
-    warning: bool = False,
+    usage_pct: int = 0,
     error: bool = False,
     providers: list[dict] | None = None,
 ) -> Image.Image:
-    budgeted = [p for p in (providers or []) if p.get("budget_usd", 0) > 0]
-    if error or not budgeted:
-        return _make_robot_icon(warning=warning, error=error)
-    if len(budgeted) == 1:
-        return _single_provider_icon(budgeted[0]["name"], warning, error)
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    shown = budgeted[:4]
-    count = len(shown)
-    if count == 2:
-        badge_size, positions = 28, [(2, 18), (34, 18)]
-    elif count == 3:
-        badge_size, positions = 20, [(2, 22), (22, 2), (42, 22)]
+    """Render tray icon as a number (0–99) showing total credit usage %."""
+    size = 64
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    if error:
+        bg = (100, 100, 100)
+    elif usage_pct >= 80:
+        bg = (180, 40, 40)   # red — high usage
+    elif usage_pct >= 60:
+        bg = (200, 120, 20)  # orange — medium
     else:
-        badge_size, positions = 28, [(2, 2), (34, 2), (2, 34), (34, 34)]
-    for p, pos in zip(shown, positions):
-        badge = _small_provider_badge(p["name"], badge_size)
-        img.paste(badge, pos, badge)
+        bg = (40, 140, 80)   # green — low
+
+    draw.rounded_rectangle([1, 1, size - 2, size - 2], radius=14, fill=bg + (255,))
+
+    text = "--" if error else str(min(99, max(0, usage_pct)))
+    font = _load_font(34)
+
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+    tx = (size - tw) // 2 - bbox[0]
+    ty = (size - th) // 2 - bbox[1]
+    draw.text((tx, ty), text, fill=(255, 255, 255, 255), font=font)
+
     return img
 
 
@@ -525,7 +462,7 @@ class TrayApp:
 
         self._icon = pystray.Icon(
             "llm-usage-indicator",
-            _make_icon(),
+            _make_icon(usage_pct=0, error=False),
             "LLM Usage Indicator",
             menu=self._make_menu(),
         )
@@ -551,10 +488,14 @@ class TrayApp:
     def _apply_update(self, data: dict | None) -> None:
         self._data = data
         providers = (data or {}).get("providers", [])
-        warning = any(p["remaining_pct"] < 20 and p["budget_usd"] > 0 for p in providers)
-        error   = data is None
+        budgeted  = [p for p in providers if p.get("budget_usd", 0) > 0]
+        error     = data is None
 
-        self._icon.icon  = _make_icon(warning=warning, error=error, providers=providers)
+        total_budget = sum(p["budget_usd"]   for p in budgeted)
+        total_spent  = sum(p["spent_total"]  for p in budgeted)
+        usage_pct    = int(total_spent / total_budget * 100) if total_budget > 0 else 0
+
+        self._icon.icon  = _make_icon(usage_pct=usage_pct, error=error, providers=providers)
         self._icon.title = _icon_title(providers)
         self._icon.menu  = self._make_menu()
         self._popup.update_data(data)
