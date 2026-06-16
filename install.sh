@@ -27,6 +27,16 @@ info "Python $PY_VER — OK"
 
 # ── Step 2: Install Python dependencies ──────────────────────────────────────
 info "Installing Python dependencies..."
+
+# Ensure pip is available (works with system Python, Anaconda/Miniconda, pyenv, etc.)
+if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    warn "pip not found via '$PYTHON -m pip'. Attempting to bootstrap with ensurepip..."
+    if ! "$PYTHON" -m ensurepip --upgrade 2>/dev/null; then
+        error "pip is not available and ensurepip failed.\n       On Ubuntu/Debian, install pip with:\n         sudo apt install python3-pip\n       Or, if using Anaconda/Miniconda:\n         conda install pip"
+    fi
+    info "pip bootstrapped via ensurepip."
+fi
+
 "$PYTHON" -m pip install -r "$SCRIPT_DIR/requirements.txt" --user -q
 info "Dependencies installed."
 
