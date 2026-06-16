@@ -138,11 +138,12 @@ class SettingsWindow:
 
     # ── UI helpers ─────────────────────────────────────────────────────────────
 
-    def _card(self, parent: tk.Widget) -> tk.Frame:
+    def _card(self, parent: tk.Widget, **pack_kw) -> tk.Frame:
         """Floating white card with a 1 px border."""
         wrap = tk.Frame(parent, bg=_BORDER, padx=1, pady=1)
+        wrap.pack(fill="x", **pack_kw)
         inner = tk.Frame(wrap, bg=_CARD)
-        inner.pack(fill="both", expand=True, padx=0, pady=0)
+        inner.pack(fill="both", expand=True)
         return inner
 
     def _spinbox(self, parent: tk.Widget, **kw) -> tk.Spinbox:
@@ -183,8 +184,7 @@ class SettingsWindow:
         tk.Label(body, text="Polling", font=_F_H, bg=_BG, fg=_TEXT,
                  anchor="w").pack(fill="x", pady=(0, 6))
 
-        card_poll = self._card(body)
-        card_poll.pack(fill="x", pady=(0, 14))
+        card_poll = self._card(body, pady=(0, 14))
 
         row_poll = tk.Frame(card_poll, bg=_CARD)
         row_poll.pack(fill="x", padx=16, pady=12)
@@ -206,8 +206,7 @@ class SettingsWindow:
         tk.Label(body, text="Credits", font=_F_H, bg=_BG,
                  fg=_TEXT, anchor="w").pack(fill="x", pady=(0, 6))
 
-        card_bud = self._card(body)
-        card_bud.pack(fill="x", pady=(0, 14))
+        card_bud = self._card(body, pady=(0, 14))
 
         tk.Label(
             card_bud,
