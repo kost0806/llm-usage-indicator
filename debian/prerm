@@ -1,5 +1,32 @@
 #!/bin/bash
-set -e
+# prerm must never exit non-zero — a failing prerm leaves the package stuck in dpkg.
+# All cleanup is best-effort; errors are swallowed explicitly.
+
+cleanup_user() {
+    local REAL_HOME="$1" XDG_RUNTIME_DIR="$2"
+
+    # Stop services with separate stop/disable calls.
+    # --now combines stop+disable but can send SIGTERM to the calling process group
+    # when the service cgroup is torn down, killing this script before || true fires.
+    systemctl --user stop    llm-usage-indicator      2>/dev/null || true
+    systemctl --user disable llm-usage-indicator      2>/dev/null || true
+    systemctl --user stop    llm-usage-indicator-tray 2>/dev/null || true
+    systemctl --user disable llm-usage-indicator-tray 2>/dev/null || true
+    pkill -f "llm_usage_indicator.tray"               2>/dev/null || true
+
+    rm -f "${REAL_HOME}/.config/autostart/llm-usage-indicator-tray.desktop"
+    rm -f "${REAL_HOME}/.config/systemd/user/llm-usage-indicator.service"
+    rm -f "${REAL_HOME}/.config/systemd/user/llm-usage-indicator-tray.service"
+    rm -f "${REAL_HOME}/.local/bin/llm-usage-indicator"
+    rm -f "${REAL_HOME}/.local/bin/llm-usage-indicator-tray"
+    rm -f "${REAL_HOME}/.local/bin/llm-usage-indicator-tray-start"
+    rm -f "${REAL_HOME}/.local/bin/llm-usage-indicator-settings"
+    rm -rf "${REAL_HOME}/.local/lib/llm_usage_indicator"
+
+    systemctl --user daemon-reload 2>/dev/null || true
+
+    echo "llm-usage-indicator: user files removed for '${USER}'."
+}
 
 case "$1" in
     remove|purge)
@@ -18,24 +45,12 @@ case "$1" in
         REAL_UID=$(id -u "${REAL_USER}")
         XDG_RUNTIME_DIR="/run/user/${REAL_UID}"
 
+        # Export the function so runuser's bash can call it.
+        export -f cleanup_user
         runuser -u "${REAL_USER}" -- \
             env HOME="${REAL_HOME}" \
                 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
                 DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus" \
-            bash -c '
-                systemctl --user disable --now llm-usage-indicator       2>/dev/null || true
-                systemctl --user stop llm-usage-indicator-tray           2>/dev/null || true
-                pkill -f "llm_usage_indicator.tray"                      2>/dev/null || true
-                rm -f ~/.config/autostart/llm-usage-indicator-tray.desktop
-                rm -f ~/.config/systemd/user/llm-usage-indicator.service
-                rm -f ~/.config/systemd/user/llm-usage-indicator-tray.service
-                rm -f ~/.local/bin/llm-usage-indicator
-                rm -f ~/.local/bin/llm-usage-indicator-tray
-                rm -f ~/.local/bin/llm-usage-indicator-tray-start
-                rm -f ~/.local/bin/llm-usage-indicator-settings
-                rm -rf ~/.local/lib/llm_usage_indicator
-                systemctl --user daemon-reload                            2>/dev/null || true
-                echo "llm-usage-indicator: user files removed for '"'"'$USER'"'"'."
-            '
+            bash -c 'cleanup_user "$HOME" "$XDG_RUNTIME_DIR"' || true
         ;;
 esac
