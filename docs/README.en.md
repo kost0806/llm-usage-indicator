@@ -1,11 +1,12 @@
-# llm-credit-monitor
+# llm-usage-indicator
 
-> Show Claude · Gemini · OpenAI today's spend and remaining credits in your Waybar status bar — **no API keys required**
+> Show Claude · Gemini · OpenAI today's spend and remaining credits in your Waybar status bar or system tray — **no API keys required**
 
 <p align="center">
   <a href="../../../actions/workflows/release.yml">
     <img alt="Build" src="../../../actions/workflows/release.yml/badge.svg"/>
   </a>
+  &nbsp;
   <a href="../README.md">한국어</a>
 </p>
 
@@ -18,33 +19,30 @@
 | **No API keys** | Works with web login only (e.g. `claude login`) |
 | **Providers** | Claude · Gemini · OpenAI · Copilot (auto-detected from model name) |
 | **Displays** | Today's spend ($) · remaining credits ($) · detailed tooltip |
-| **Data source** | [ccusage](https://github.com/ryoppippi/ccusage) — reads local JSONL conversation logs |
-| **Platform** | Ubuntu 22.04+ (Wayland & X11) |
-| **Auto-start** | `systemd --user` service |
-| **Dependencies** | Python 3.10+, Node.js 18+, `aiosqlite` |
+| **Data source** | Reads local JSONL conversation logs directly (no external tools needed) |
+| **Platform** | Ubuntu 22.04+ (Wayland & X11) · Windows 10+ · macOS 12+ |
+| **Auto-start** | `systemd --user` service (Linux) / system tray autostart |
+| **Dependencies** | Python 3.10+ |
 
 ### How it works
 
-ccusage reads conversation logs stored locally at `~/.claude/projects/**/*.jsonl` and similar paths, then aggregates cost by model.  
+Reads conversation logs stored locally at `~/.claude/projects/**/*.jsonl` and similar paths, then aggregates cost by model.  
 **No outbound API calls. No internet required. No API keys.**
 
 ```
 ~/.claude/projects/**/*.jsonl   ← Claude Code conversation logs (local)
            │
            ▼
-  npx ccusage@latest daily      ← runs every 60 seconds
-           │
-           ▼
-    CcusageProvider              ← groups models by provider prefix
+  JsonlProvider (Python)         ← parses every 60 s, groups by provider prefix
            │
            ▼
      SQLite Store                ← 7-day snapshot history
            │
            ▼
-   Unix Socket Server            ← JSON IPC (/tmp/llm-monitor.sock)
+   TCP Socket Server             ← JSON IPC (127.0.0.1:37891)
            │
            ▼
-      module.sh                  ← Waybar custom/script (every 30s)
+      module.sh                  ← Waybar custom/script (every 30 s)
            │
            ▼
       Waybar status bar          ← 🤖 C:$13.50 ↑$1.50  O:$7.70 ↑$0.30
@@ -54,40 +52,72 @@ ccusage reads conversation logs stored locally at `~/.claude/projects/**/*.jsonl
 
 ## Requirements
 
-- Ubuntu 22.04+ (any Debian-based distro should work)
-- Python 3.10+ (for `aiosqlite`)
-- Node.js 18+ with npx (for `ccusage`)
-- [Waybar](https://github.com/Alexays/Waybar)
+- Ubuntu 22.04+ (any Debian-based distro) · Windows 10+ · macOS 12+
+- Python 3.10+
+- [Waybar](https://github.com/Alexays/Waybar) (Linux Waybar integration only)
 - Claude Code CLI logged in via `claude login`
 
 ---
 
-## Quick Install
+## Installation
 
-### From release tarball (recommended)
+### Option 1 — Always install the latest version
+
+Automatically downloads and installs the newest release every time you run this command.
+
+**Linux / macOS**
 
 ```bash
-VERSION=$(curl -s https://api.github.com/repos/kost0806/llm-usage-indicator/releases/latest \
-  | grep -oP '"tag_name":\s*"v\K[^"]+')
+curl -fsSL https://raw.githubusercontent.com/kost0806/llm-usage-indicator/main/install.sh | bash
+```
 
-curl -LO "https://github.com/kost0806/llm-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.tar.gz"
-tar -xzf "llm-credit-monitor-${VERSION}.tar.gz"
-cd "llm-credit-monitor-${VERSION}"
+**Windows (PowerShell — no admin required)**
+
+```powershell
+irm https://raw.githubusercontent.com/kost0806/llm-usage-indicator/main/install.ps1 | iex
+```
+
+---
+
+### Option 2 — Install a specific version
+
+Use this when you need to pin a version for reproducible deployments or rollbacks.  
+Check the [Releases page](../../releases) for available version tags (e.g. `v1.2.3`).
+
+**Linux / macOS**
+
+```bash
+# Replace v1.2.3 with the desired version tag
+curl -fsSL https://github.com/kost0806/llm-usage-indicator/releases/download/v1.2.3/install.sh | bash
+```
+
+**Windows (PowerShell)**
+
+```powershell
+# Replace v1.2.3 with the desired version tag
+irm https://github.com/kost0806/llm-usage-indicator/releases/download/v1.2.3/install.ps1 | iex
+```
+
+**Install from tarball (Linux / macOS)**
+
+```bash
+VERSION=1.2.3
+curl -LO "https://github.com/kost0806/llm-usage-indicator/releases/download/v${VERSION}/llm-usage-indicator-${VERSION}.tar.gz"
+tar -xzf "llm-usage-indicator-${VERSION}.tar.gz"
+cd "llm-usage-indicator-${VERSION}"
 bash install.sh
 ```
 
-### Debian package (.deb)
+Verify checksum (optional):
 
 ```bash
-VERSION=$(curl -s https://api.github.com/repos/kost0806/llm-usage-indicator/releases/latest \
-  | grep -oP '"tag_name":\s*"v\K[^"]+')
-
-curl -LO "https://github.com/kost0806/llm-usage-indicator/releases/latest/download/llm-credit-monitor-${VERSION}.deb"
-sudo dpkg -i "llm-credit-monitor-${VERSION}.deb"
-pip install aiosqlite --user
+curl -LO "https://github.com/kost0806/llm-usage-indicator/releases/download/v${VERSION}/llm-usage-indicator-${VERSION}.tar.gz.sha256"
+sha256sum -c "llm-usage-indicator-${VERSION}.tar.gz.sha256"
 ```
 
-### From source
+---
+
+### Option 3 — Install from source
 
 ```bash
 git clone https://github.com/kost0806/llm-usage-indicator.git
@@ -99,14 +129,14 @@ bash install.sh
 
 ## Configuration
 
-Config file: `~/.config/llm-credit-monitor/config.toml`
+Config file: `~/.config/llm-usage-indicator/config.toml`
 
 ```toml
 [general]
-poll_interval = 60                       # how often to run ccusage (seconds)
-socket_path   = "/tmp/llm-monitor.sock"
-db_path       = "~/.local/share/llm-credit-monitor/data.db"
-ccusage_cmd   = "npx ccusage@latest"     # ccusage command (override if needed)
+poll_interval = 60          # how often to parse JSONL logs (seconds)
+ipc_host      = "127.0.0.1"
+ipc_port      = 37891
+db_path       = ""          # empty = platform default path
 
 # Monthly credit budgets in USD — used to calculate remaining balance
 [budgets]
@@ -127,52 +157,12 @@ openai = 10.00
 After editing the config, restart the daemon:
 
 ```bash
-systemctl --user restart llm-credit-monitor
+systemctl --user restart llm-usage-indicator
 ```
 
 ---
 
-## Manual Install
-
-```bash
-# 1. Install Python dependency
-pip install aiosqlite --user
-
-# 2. Copy config
-mkdir -p ~/.config/llm-credit-monitor
-cp config.example.toml ~/.config/llm-credit-monitor/config.toml
-chmod 600 ~/.config/llm-credit-monitor/config.toml
-
-# 3. Install daemon library
-mkdir -p ~/.local/lib/llm-credit-monitor
-cp -r daemon/* ~/.local/lib/llm-credit-monitor/
-
-# 4. Create launcher wrapper
-mkdir -p ~/.local/bin
-cat > ~/.local/bin/llm-credit-monitor << 'WRAP'
-#!/usr/bin/env bash
-PYTHONPATH="$HOME/.local/lib/llm-credit-monitor" exec python3 -c "
-import sys; sys.path.insert(0, '$HOME/.local/lib/llm-credit-monitor')
-from main import main; main()
-" "$@"
-WRAP
-chmod +x ~/.local/bin/llm-credit-monitor
-
-# 5. Register systemd user service
-mkdir -p ~/.config/systemd/user
-cp systemd/llm-credit-monitor.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now llm-credit-monitor
-
-# 6. Install Waybar script
-mkdir -p ~/.config/waybar/scripts
-cp waybar/module.sh ~/.config/waybar/scripts/llm-monitor.sh
-chmod +x ~/.config/waybar/scripts/llm-monitor.sh
-```
-
----
-
-## Waybar Integration
+## Waybar Integration (Linux)
 
 ### 1. Add the module to your config
 
@@ -221,17 +211,15 @@ pkill waybar && waybar &
 ### Daemon management
 
 ```bash
-systemctl --user status llm-credit-monitor   # check status
-systemctl --user restart llm-credit-monitor  # restart
-systemctl --user stop llm-credit-monitor     # stop
+systemctl --user status llm-usage-indicator   # check status
+systemctl --user restart llm-usage-indicator  # restart
+systemctl --user stop llm-usage-indicator     # stop
 ```
 
 ### View logs
 
 ```bash
-journalctl --user -u llm-credit-monitor -f
-# or directly:
-tail -f ~/.local/share/llm-credit-monitor/monitor.log
+journalctl --user -u llm-usage-indicator -f
 ```
 
 ### Query the socket directly
@@ -239,10 +227,10 @@ tail -f ~/.local/share/llm-credit-monitor/monitor.log
 ```bash
 python3 -c "
 import socket, json
-with socket.socket(socket.AF_UNIX) as s:
-    s.connect('/tmp/llm-monitor.sock')
-    s.sendall(b'{\"cmd\":\"status\"}\n')
-    print(json.dumps(json.loads(s.recv(65536)), indent=2))
+s = socket.create_connection(('127.0.0.1', 37891))
+s.sendall(b'{\"cmd\":\"status\"}\n')
+print(json.dumps(json.loads(s.recv(65536)), indent=2))
+s.close()
 "
 ```
 
@@ -267,12 +255,6 @@ Example response:
 }
 ```
 
-### Debug ccusage directly
-
-```bash
-npx ccusage@latest daily --json | python3 -m json.tool
-```
-
 ---
 
 ## Troubleshooting
@@ -280,50 +262,22 @@ npx ccusage@latest daily --json | python3 -m json.tool
 ### Waybar shows `🤖 --`
 
 ```bash
-# Is the daemon running?
-systemctl --user status llm-credit-monitor
-
-# Does the socket exist?
-ls -la /tmp/llm-monitor.sock
-
-# Check logs for errors
-journalctl --user -u llm-credit-monitor -n 30
+systemctl --user status llm-usage-indicator
+journalctl --user -u llm-usage-indicator -n 30
 ```
 
-### ccusage shows no data
-
-```bash
-# Run ccusage directly
-npx ccusage@latest daily
-
-# Check that conversation logs exist
-ls ~/.claude/projects/
-```
+### Usage shows zero
 
 Usage will be zero if you haven't had any Claude Code conversations yet.
 
-### Node.js / npx not found
-
 ```bash
-# Ubuntu/Debian
-sudo apt install nodejs npm
-
-# Or via nvm
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-nvm install 22
-```
-
-If npx is installed at a non-standard path, set the full path in config:
-
-```toml
-ccusage_cmd = "/usr/local/bin/npx ccusage@latest"
+ls ~/.claude/projects/
 ```
 
 ### Daemon won't start
 
 ```bash
-# Run directly to see the error
-~/.local/bin/llm-credit-monitor
+~/.local/bin/llm-usage-indicator
 ```
 
 ---
