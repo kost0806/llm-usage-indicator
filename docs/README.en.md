@@ -54,6 +54,7 @@ Reads conversation logs stored locally at `~/.claude/projects/**/*.jsonl` and si
 
 - Ubuntu 22.04+ (any Debian-based distro) · Windows 10+ · macOS 12+
 - Python 3.10+
+- `python3-tk` — required for the Settings GUI (Ubuntu/Debian: `sudo apt install python3-tk`)
 - [Waybar](https://github.com/Alexays/Waybar) (Linux Waybar integration only)
 - Claude Code CLI logged in via `claude login`
 

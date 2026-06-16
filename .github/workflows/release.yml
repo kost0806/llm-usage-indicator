@@ -118,6 +118,14 @@ jobs:
 
             ---
 
+            ### 의존성 (Ubuntu/Debian)
+            Settings GUI를 사용하려면 `python3-tk`가 필요합니다.
+            ```bash
+            sudo apt install python3-tk
+            ```
+
+            ---
+
             ### 항상 최신 버전 설치
 
             새 릴리스가 나올 때마다 자동으로 최신 버전을 받습니다.

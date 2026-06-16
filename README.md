@@ -54,6 +54,7 @@
 
 - Ubuntu 22.04+ (Debian 계열 권장) · Windows 10+ · macOS 12+
 - Python 3.10 이상
+- `python3-tk` — Settings GUI 사용 시 필요 (Ubuntu/Debian: `sudo apt install python3-tk`)
 - [Waybar](https://github.com/Alexays/Waybar) (Linux Waybar 연동 시)
 - Claude Code CLI (`claude login`으로 로그인된 상태)
 
