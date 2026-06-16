@@ -9,6 +9,53 @@ info()    { printf "${GREEN}[INFO]${NC} %s\n" "$*"; }
 warn()    { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
 error()   { printf "${RED}[ERROR]${NC} %s\n" "$*"; exit 1; }
 
+# ── Rollback tracking ─────────────────────────────────────────────────────────
+# Files to remove (rm -f) and directories to remove (rm -rf) on failure.
+# Directories are stored in creation order; rollback removes them in reverse.
+_RB_FILES=()
+_RB_DIRS=()
+_INSTALL_OK=0
+
+rollback() {
+    [ "$_INSTALL_OK" = "1" ] && return
+    warn "Installation failed — rolling back..."
+
+    # Stop and disable any services we may have enabled.
+    systemctl --user disable --now llm-usage-indicator      2>/dev/null || true
+    systemctl --user disable --now llm-usage-indicator-tray 2>/dev/null || true
+    systemctl --user daemon-reload                          2>/dev/null || true
+
+    # Remove individual tracked files.
+    for f in "${_RB_FILES[@]+"${_RB_FILES[@]}"}"; do
+        rm -f "$f"
+    done
+
+    # Remove tracked directories in reverse creation order.
+    local i
+    for (( i=${#_RB_DIRS[@]}-1; i>=0; i-- )); do
+        rm -rf "${_RB_DIRS[$i]}"
+    done
+
+    warn "Rollback complete. Fix the issue above, then re-run: bash $0"
+}
+trap rollback EXIT
+
+# Create a directory only if it does not already exist; track new ones for rollback.
+ensure_dir() {
+    local dir="$1"
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir"
+        _RB_DIRS+=("$dir")
+    fi
+}
+
+# Copy a file and register the destination for rollback.
+install_file() {
+    local src="$1" dst="$2"
+    cp "$src" "$dst"
+    _RB_FILES+=("$dst")
+}
+
 # ── Step 1: Python version check ─────────────────────────────────────────────
 info "Checking Python version..."
 PYTHON=$(command -v python3 || true)
@@ -27,13 +74,40 @@ info "Python $PY_VER — OK"
 
 # ── Step 2: Install Python dependencies ──────────────────────────────────────
 info "Installing Python dependencies..."
-"$PYTHON" -m pip install -r "$SCRIPT_DIR/requirements.txt" --user -q
+
+# Resolve pip: prefer python3 -m pip (guaranteed same interpreter), then PATH fallback.
+PIP_RUN=""
+if "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    PIP_RUN="$PYTHON -m pip"
+else
+    for _candidate in pip3 pip; do
+        if command -v "$_candidate" >/dev/null 2>&1; then
+            warn "pip not found via '$PYTHON -m pip'; using $(command -v "$_candidate") from PATH."
+            PIP_RUN="$_candidate"
+            break
+        fi
+    done
+fi
+
+if [ -z "$PIP_RUN" ]; then
+    warn "No pip found in PATH. Attempting to bootstrap with ensurepip..."
+    if "$PYTHON" -m ensurepip --upgrade 2>/dev/null; then
+        PIP_RUN="$PYTHON -m pip"
+        info "pip bootstrapped via ensurepip."
+    else
+        error "pip is not available.\n       On Ubuntu/Debian:   sudo apt install python3-pip\n       On Anaconda/Miniconda: conda install pip"
+    fi
+fi
+
+if ! $PIP_RUN install -r "$SCRIPT_DIR/requirements.txt" --user -q; then
+    error "Failed to install Python dependencies.\n       Check your network connection, then retry:\n         $PIP_RUN install -r /usr/share/llm-usage-indicator/requirements.txt --user"
+fi
 info "Dependencies installed."
 
 # ── Step 3: Create config directory ──────────────────────────────────────────
 CONFIG_DIR="$HOME/.config/llm-usage-indicator"
 info "Creating config directory: $CONFIG_DIR"
-mkdir -p "$CONFIG_DIR"
+ensure_dir "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
 
 # ── Step 4: Copy example config (skip if exists) ─────────────────────────────
@@ -41,7 +115,7 @@ CONFIG_FILE="$CONFIG_DIR/config.toml"
 if [ -f "$CONFIG_FILE" ]; then
     warn "Config file already exists, skipping: $CONFIG_FILE"
 else
-    cp "$SCRIPT_DIR/config.example.toml" "$CONFIG_FILE"
+    install_file "$SCRIPT_DIR/config.example.toml" "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
     info "Created config: $CONFIG_FILE"
     info "→ Edit $CONFIG_FILE to set your monthly budgets."
@@ -50,14 +124,17 @@ fi
 # ── Step 5: Copy daemon library ───────────────────────────────────────────────
 LIB_DIR="$HOME/.local/lib/llm_usage_indicator"
 info "Installing daemon to: $LIB_DIR"
+# LIB_DIR is package-specific; always track for full removal on rollback.
+_RB_DIRS+=("$LIB_DIR")
 mkdir -p "$LIB_DIR"
 cp -r "$SCRIPT_DIR/daemon/"* "$LIB_DIR/"
 info "Daemon library installed."
 
 # ── Step 6: Create wrapper script ────────────────────────────────────────────
 BIN_DIR="$HOME/.local/bin"
-mkdir -p "$BIN_DIR"
+ensure_dir "$BIN_DIR"
 WRAPPER="$BIN_DIR/llm-usage-indicator"
+_RB_FILES+=("$WRAPPER")
 
 cat > "$WRAPPER" << WRAPPER_EOF
 #!/usr/bin/env bash
@@ -78,8 +155,8 @@ fi
 # ── Step 8: Install and enable systemd service ───────────────────────────────
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 info "Installing systemd user service..."
-mkdir -p "$SYSTEMD_USER_DIR"
-cp "$SCRIPT_DIR/systemd/llm-usage-indicator.service" "$SYSTEMD_USER_DIR/"
+ensure_dir "$SYSTEMD_USER_DIR"
+install_file "$SCRIPT_DIR/systemd/llm-usage-indicator.service" "$SYSTEMD_USER_DIR/llm-usage-indicator.service"
 
 if systemctl --user daemon-reload 2>/dev/null; then
     systemctl --user enable --now llm-usage-indicator 2>/dev/null \
@@ -93,17 +170,18 @@ fi
 # ── Step 9: Install Waybar script ────────────────────────────────────────────
 WAYBAR_SCRIPTS="$HOME/.config/waybar/scripts"
 info "Installing Waybar script..."
-mkdir -p "$WAYBAR_SCRIPTS"
-cp "$SCRIPT_DIR/waybar/module.sh" "$WAYBAR_SCRIPTS/llm-monitor.sh"
+ensure_dir "$WAYBAR_SCRIPTS"
+install_file "$SCRIPT_DIR/waybar/module.sh" "$WAYBAR_SCRIPTS/llm-monitor.sh"
 chmod +x "$WAYBAR_SCRIPTS/llm-monitor.sh"
 info "Waybar script installed: $WAYBAR_SCRIPTS/llm-monitor.sh"
 
 # ── Step 10: Install GUI settings app ────────────────────────────────────────
 info "Installing settings GUI..."
 
-cp "$SCRIPT_DIR/gui/settings.py" "$LIB_DIR/settings_gui.py"
+install_file "$SCRIPT_DIR/gui/settings.py" "$LIB_DIR/settings_gui.py"
 
 SETTINGS_BIN="$BIN_DIR/llm-usage-indicator-settings"
+_RB_FILES+=("$SETTINGS_BIN")
 cat > "$SETTINGS_BIN" << SETTINGS_EOF
 #!/usr/bin/env bash
 PYTHONPATH="\$HOME/.local/lib" exec python3 -m llm_usage_indicator.settings_gui "\$@"
@@ -112,8 +190,8 @@ chmod +x "$SETTINGS_BIN"
 info "Settings launcher installed: $SETTINGS_BIN"
 
 APPS_DIR="$HOME/.local/share/applications"
-mkdir -p "$APPS_DIR"
-cp "$SCRIPT_DIR/gui/llm-usage-indicator-settings.desktop" "$APPS_DIR/"
+ensure_dir "$APPS_DIR"
+install_file "$SCRIPT_DIR/gui/llm-usage-indicator-settings.desktop" "$APPS_DIR/llm-usage-indicator-settings.desktop"
 sed -i "s|^Exec=.*|Exec=$SETTINGS_BIN|" "$APPS_DIR/llm-usage-indicator-settings.desktop"
 update-desktop-database "$APPS_DIR" 2>/dev/null || true
 info "Desktop entry installed: $APPS_DIR/llm-usage-indicator-settings.desktop"
@@ -121,9 +199,10 @@ info "Desktop entry installed: $APPS_DIR/llm-usage-indicator-settings.desktop"
 # ── Step 11: Install tray indicator ──────────────────────────────────────────
 info "Installing tray indicator..."
 
-cp "$SCRIPT_DIR/gui/tray.py" "$LIB_DIR/tray.py"
+install_file "$SCRIPT_DIR/gui/tray.py" "$LIB_DIR/tray.py"
 
 TRAY_BIN="$BIN_DIR/llm-usage-indicator-tray"
+_RB_FILES+=("$TRAY_BIN")
 cat > "$TRAY_BIN" << TRAY_EOF
 #!/usr/bin/env bash
 PYTHONPATH="$HOME/.local/lib" exec python3 -m llm_usage_indicator.tray "\$@"
@@ -131,11 +210,12 @@ TRAY_EOF
 chmod +x "$TRAY_BIN"
 info "Tray launcher installed: $TRAY_BIN"
 
-cp "$SCRIPT_DIR/systemd/llm-usage-indicator-tray.service" "$SYSTEMD_USER_DIR/"
+install_file "$SCRIPT_DIR/systemd/llm-usage-indicator-tray.service" "$SYSTEMD_USER_DIR/llm-usage-indicator-tray.service"
 systemctl --user daemon-reload 2>/dev/null || true
 info "Tray service registered: llm-usage-indicator-tray"
 
 TRAY_STARTER="$BIN_DIR/llm-usage-indicator-tray-start"
+_RB_FILES+=("$TRAY_STARTER")
 cat > "$TRAY_STARTER" << STARTER_EOF
 #!/usr/bin/env bash
 if command -v systemctl >/dev/null 2>&1; then
@@ -149,8 +229,8 @@ chmod +x "$TRAY_STARTER"
 info "Tray starter installed: $TRAY_STARTER"
 
 AUTOSTART_DIR="$HOME/.config/autostart"
-mkdir -p "$AUTOSTART_DIR"
-cp "$SCRIPT_DIR/gui/llm-usage-indicator-tray.desktop" "$AUTOSTART_DIR/"
+ensure_dir "$AUTOSTART_DIR"
+install_file "$SCRIPT_DIR/gui/llm-usage-indicator-tray.desktop" "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
 sed -i "s|^Exec=.*|Exec=$TRAY_STARTER|" "$AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
 info "Autostart entry installed: $AUTOSTART_DIR/llm-usage-indicator-tray.desktop"
 
@@ -167,6 +247,7 @@ else
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
+_INSTALL_OK=1   # disarm rollback trap
 echo ""
 info "Installation complete!"
 echo ""

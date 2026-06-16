@@ -3,8 +3,8 @@ Version: 0.0.0
 Section: utils
 Priority: optional
 Architecture: all
-Depends: python3 (>= 3.10), python3-pip
-Recommends: waybar
+Depends: python3 (>= 3.10)
+Recommends: python3-pip, waybar
 Maintainer: llm-usage-indicator contributors
 Description: LLM usage indicator for Waybar / system tray
  Tracks Claude / Gemini / OpenAI usage and remaining monthly budget.

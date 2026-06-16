@@ -25,10 +25,25 @@ case "$1" in
         XDG_RUNTIME_DIR="/run/user/${REAL_UID}"
 
         echo "llm-usage-indicator: Running setup for user '${REAL_USER}'..."
-        runuser -u "${REAL_USER}" -- \
+        if ! runuser -u "${REAL_USER}" -- \
             env HOME="${REAL_HOME}" \
                 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
                 DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus" \
-            bash /usr/share/llm-usage-indicator/install.sh
+            bash /usr/share/llm-usage-indicator/install.sh; then
+            echo ""
+            echo "llm-usage-indicator: ERROR: Per-user setup failed (see above)."
+            echo "  Removing package to restore a clean state..."
+            echo ""
+            # Schedule dpkg --purge after the current dpkg transaction releases its lock.
+            # lock-frontend is held by apt; plain lock by dpkg -i.
+            # flock blocks until the lock is free, then dpkg --purge acquires it normally.
+            (
+                exec 9>>/var/lib/dpkg/lock-frontend
+                flock -w 60 9 2>/dev/null || true
+                exec 9>&-
+                dpkg --purge llm-usage-indicator
+            ) >/dev/null 2>&1 &
+            disown
+        fi
         ;;
 esac
