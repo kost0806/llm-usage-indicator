@@ -175,6 +175,9 @@ class TrayPopup:
         self._data: dict | None = None
         self._content: tk.Frame | None = None
 
+        self._drag_x = 0
+        self._drag_y = 0
+
         self._win = tk.Toplevel(master)
         self._win.withdraw()
         self._win.overrideredirect(True)
@@ -185,6 +188,15 @@ class TrayPopup:
         self._shell.pack(padx=1, pady=1, fill="both", expand=True)
 
         self._win.bind("<FocusOut>", lambda _e: self._win.after(120, self._auto_hide))
+
+    def _start_drag(self, event: tk.Event) -> None:
+        self._drag_x = event.x_root - self._win.winfo_x()
+        self._drag_y = event.y_root - self._win.winfo_y()
+
+    def _on_drag(self, event: tk.Event) -> None:
+        x = event.x_root - self._drag_x
+        y = event.y_root - self._drag_y
+        self._win.geometry(f"+{x}+{y}")
 
     def _auto_hide(self) -> None:
         try:
@@ -248,10 +260,12 @@ class TrayPopup:
         hdr = tk.Frame(self._content, bg=_C_CONT_HIGH)
         hdr.pack(fill="x")
 
-        tk.Label(
+        lbl = tk.Label(
             hdr, text="LLM Usage",
             font=_F_H, bg=_C_CONT_HIGH, fg=_C_PRIMARY,
-        ).pack(side="left", padx=16, pady=14)
+            cursor="fleur",
+        )
+        lbl.pack(side="left", padx=16, pady=14)
 
         tk.Button(
             hdr, text="✕",
@@ -262,6 +276,10 @@ class TrayPopup:
             cursor="hand2",
             command=self.hide,
         ).pack(side="right", padx=8, pady=10)
+
+        for w in (hdr, lbl):
+            w.bind("<ButtonPress-1>", self._start_drag)
+            w.bind("<B1-Motion>", self._on_drag)
 
     # ── Provider card ─────────────────────────────────────────────────────────
 
@@ -395,13 +413,13 @@ class TrayPopup:
         ).pack(side="left")
 
         tk.Button(
-            row, text="Quit",
+            row, text="Close",
             font=_F,
             bg=_C_BG, fg=_C_ON_SURF_VAR,
             activebackground=_C_CONT, activeforeground=_C_ON_SURF,
             relief="flat", bd=0, padx=12, pady=7,
             cursor="hand2",
-            command=self._on_quit,
+            command=self.hide,
         ).pack(side="right")
 
 
