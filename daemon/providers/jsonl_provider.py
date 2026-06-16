@@ -60,12 +60,15 @@ def _get_pricing(model: str) -> tuple[float, float, float, float]:
 
 
 def _compute_cost(model: str, usage: dict) -> float:
-    inp        = int(usage.get("input_tokens", 0))
-    out        = int(usage.get("output_tokens", 0))
-    cache_w    = int(usage.get("cache_creation_input_tokens", 0))
-    cache_r    = int(usage.get("cache_read_input_tokens", 0))
+    inp     = int(usage.get("input_tokens", 0))
+    out     = int(usage.get("output_tokens", 0))
+    cache_w = int(usage.get("cache_creation_input_tokens", 0))
+    cache_r = int(usage.get("cache_read_input_tokens", 0))
     p_in, p_out, p_cw, p_cr = _get_pricing(model)
-    return (inp * p_in + out * p_out + cache_w * p_cw + cache_r * p_cr) / 1_000_000
+    # input_tokens is the total including cache tokens; only bill the non-cached
+    # portion at the regular rate to avoid double-counting cache tokens.
+    regular = max(0, inp - cache_w - cache_r)
+    return (regular * p_in + out * p_out + cache_w * p_cw + cache_r * p_cr) / 1_000_000
 
 
 def _parse_date(timestamp: str) -> Optional[str]:
